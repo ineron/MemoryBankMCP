@@ -22,6 +22,32 @@ This project replaces the file store with a small MCP server backed by Postgres 
 - **One-command installer** — point it at a project directory and it backs up any existing Claude Code config, wires up the new commands, registers the project, and — if a legacy `memory-bank/*.md` tree exists — previews the import (node counts, warnings, zero API cost) before spending a single real embedding call.
 - **Legacy importer** — turns an existing file-based memory bank into nodes: task tables become graded task nodes with real dependency edges, dated progress logs, topic-tagged environment facts, YAML-frontmatter files, and monthly changelog archives are all handled, not just flattened into one blob.
 
+## Cross-project filing, by example
+
+A session working on one project can deliberately leave something in a *different* project — a bug spotted while testing another service, a note that belongs elsewhere. It never happens by accident: writing into another project requires naming it explicitly.
+
+```
+memory_upsert(
+    project="core-api",                  # target: where the task should land
+    kind="task",
+    title="Login endpoint returns 500 on an empty password field",
+    priority=7, importance=4,
+    filed_from_project="landing-page",   # source: where this session is actually working
+)
+```
+
+The task lands in `core-api` with `status="inbox"` and records where it came from. Next time someone runs `/start` in `core-api`, it shows up in its own block — never silently merged into the regular backlog:
+
+```
+📥 Filed from other sessions:
+
+| # | Task | Priority | Importance | Topic | Filed from    |
+|---|------|----------|------------|-------|---------------|
+| 1 | Login endpoint returns 500 on an empty password field | 🔴7 | ⭐⭐⭐⭐ | bug | landing-page |
+```
+
+`/projects` surfaces inbox counts across every connected project at a glance, so a cross-project note can't sit unnoticed for long.
+
 ## Quick start
 
 **Requirements:** Python 3.11+, a Postgres instance with the `vector` extension available, and an embedding API key ([Voyage AI](https://www.voyageai.com/) by default, or OpenAI).
