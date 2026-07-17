@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "memory-bank": {
+      "command": "/absolute/path/to/MemoryBankMCP/server/.venv/bin/python",
+      "args": ["-m", "memory_mcp.server"]
+    }
+  }
+}

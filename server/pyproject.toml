@@ -1,0 +1,20 @@
+[project]
+name = "memory-mcp"
+version = "0.1.0"
+description = "Postgres-backed Memory Bank MCP server (vector + graph retrieval, scan-and-report)"
+requires-python = ">=3.11"
+dependencies = [
+    "mcp>=1.2.0",
+    "asyncpg>=0.29",
+    "pgvector>=0.3.6",
+    "voyageai>=0.3.0",
+    "openai>=1.40",
+    "python-dotenv>=1.0",
+]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["memory_mcp*"]
