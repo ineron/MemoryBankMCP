@@ -2,8 +2,6 @@
 """Memory Bank installer: point it at a project directory, it does the rest.
 
 Automates the exact sequence that's been done by hand for every project
-connected so far (StayHugCRM, ledgyx-landing, ledgyx-admin-ui, pg_ilib,
-pg_igraph, pg_ipl):
 
     1. Back up the project's existing .claude/ (if any) — never overwrite
        without a copy, especially since most of these projects don't
