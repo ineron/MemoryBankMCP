@@ -23,6 +23,15 @@ cp .env.example .env
 psql "$DATABASE_URL" -f memory_mcp/schema.sql
 ```
 
+If you're updating an *existing* database rather than starting fresh, apply
+any migrations added since your last `schema.sql` (once per **database**,
+not per connected project — there's no migration runner or
+`schema_version` table, so this is by hand):
+
+```bash
+psql "$DATABASE_URL" -f memory_mcp/migrations/002_add_messages.sql
+```
+
 `docker-compose.yml` is kept as an optional local-dev alternative (a
 pgvector/pgvector container) if you don't have a real Postgres available —
 but the intended real setup is a durable Postgres instance you already run,
@@ -92,6 +101,27 @@ share `scope="group"` search. If it has an existing `memory-bank/*.md`
 tree, call `memory_import(project=..., path="memory-bank", dry_run=True)`
 first to preview before running it for real.
 
+## Message listener
+
+Inter-agent messages (`message_send`/`message_inbox`/`message_thread`/
+`message_mark`) get live delivery through a standalone process,
+`memory_mcp.listener`, since the MCP server itself is request/response-only
+over stdio and cannot push. `/start` normally arms this automatically via
+Claude Code's `Monitor` tool. To run it by hand for debugging:
+
+```bash
+source .venv/bin/activate
+set -a; source .env; set +a
+python -u -m memory_mcp.listener --project your-project-slug
+```
+
+Expect a `[mb-listener] ready on mb_msg_<id> for your-project-slug — N
+unread message(s) replayed` line. It reconnects automatically on a dropped
+DB connection and stands by (rather than erroring) if another session is
+already listening for the same project. `MESSAGE_MAX_REPLY_DEPTH` (default
+`6`, see `.env.example`) caps how many times a thread can be replied to
+before a session must stop and surface it to its user.
+
 ## Embedding provider
 
 Default is Voyage AI (`voyage-3.5`, 1024-dim). OpenAI (`text-embedding-3-small`,
@@ -117,21 +147,24 @@ EMBED_PROVIDER=mock python tests/manual_phase3.py   # retrieval: threshold filte
                                                      # scan-verdict exclusion, task/inbox split, group scope
 EMBED_PROVIDER=mock python tests/manual_phase5.py   # markdown importer: task grading, dependency
                                                      # edges, dated progress, devenv topic-splitting
+EMBED_PROVIDER=mock python tests/manual_messages.py # messaging: round trip, reply derivation, depth
+                                                     # cap, trigger-level guards, NOTIFY delivery
 ```
 
 These scripts create real projects (`test-ledgyx`/`test-ledgyx-core`/
 `test-ledgyx-landing` for phase2/3, `stayhug-legacy-import-test` for
-phase5) in whatever database you point them at — the `test-` prefix keeps
-them from colliding with any real project of the same conceptual name
-(e.g. a real `ledgyx-landing`). Run against a real, in-use DB, clean up
-afterward:
+phase5, `test-msg-a`/`test-msg-b` for messaging) in whatever database you
+point them at — the `test-` prefix keeps them from colliding with any real
+project of the same conceptual name (e.g. a real `ledgyx-landing`). Run
+against a real, in-use DB, clean up afterward:
 
 ```bash
 python3 -c "
 import asyncio
 from memory_mcp import db
 async def main():
-    for slug in ('test-ledgyx-core', 'test-ledgyx-landing', 'stayhug-legacy-import-test'):
+    for slug in ('test-ledgyx-core', 'test-ledgyx-landing', 'stayhug-legacy-import-test',
+                 'test-msg-a', 'test-msg-b'):
         row = await db.fetchrow('SELECT id FROM projects WHERE slug = \$1', slug)
         if row:
             await db.execute('DELETE FROM projects WHERE id = \$1', row['id'])

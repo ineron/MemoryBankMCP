@@ -9,6 +9,9 @@ Tool groups (see plan doc for full rationale):
   - core writes: memory_upsert, memory_link, memory_get
   - retrieval (phase 3): memory_search, memory_tasks, memory_active, memory_mark
   - lifecycle (phase 3): memory_archive
+  - inter-agent messaging: message_send, message_inbox, message_thread, message_mark
+    (a separate conversational channel from the inbox-task mechanism above —
+    see messaging.py and listener.py)
   - migration (phase 5): memory_import
 """
 
@@ -21,7 +24,7 @@ from typing import Any, Optional
 from dotenv import load_dotenv
 from mcp.server.fastmcp import FastMCP
 
-from . import db, retrieval
+from . import db, messaging, retrieval
 from .embeddings import embed_one
 from .importer import import_markdown_tree
 
@@ -481,6 +484,106 @@ async def memory_archive(node_id: int, status: str = "archived") -> dict[str, An
     if row is None:
         raise ValueError(f"No node with id={node_id}")
     return dict(row)
+
+
+# ---------------------------------------------------------------------
+# Inter-agent messaging
+#
+# A conversational channel, separate from the inbox-task mechanism above
+# (memory_upsert(..., filed_from_project=...)). Use a message for "I need
+# to know X" / "heads up, Y changed"; use an inbox task for "here is work
+# for you to do" — inbox tasks are durable backlog items that survive
+# being ignored for weeks, messages are a live exchange. No embedding is
+# computed for a message, so this channel keeps working through an
+# embedding-provider outage that would otherwise take memory_upsert down
+# with it. Live delivery into an idle session comes from listener.py via
+# Claude Code's Monitor tool, armed by /start — see messaging.py's module
+# docstring for the full design.
+# ---------------------------------------------------------------------
+
+
+@mcp.tool()
+async def message_send(
+    body: str,
+    to_project: Optional[str] = None,
+    subject: str = "",
+    kind: Optional[str] = None,
+    from_project: Optional[str] = None,
+    from_session: str = "",
+    in_reply_to: Optional[int] = None,
+) -> dict[str, Any]:
+    """Send a message to another project's Claude session — a conversational
+    channel, separate from the inbox-task mechanism (memory_upsert(...,
+    filed_from_project=...)), which stays the right tool for "here is work
+    for you to do". Use a message for "I need to know X" / "heads up, Y
+    changed"; use an inbox task for a work item.
+
+    Replying: pass ONLY `in_reply_to` (plus `body`, and `kind` if you want
+    something other than "reply"). `to_project` and `from_project` are
+    derived from the parent message — do not pass routing arguments to a
+    reply, and do not open a new thread to continue an existing
+    conversation. Starting a new thread requires both `to_project` and
+    `from_project`.
+
+    kind: "ask" (you want an answer), "reply" (you are answering), "fyi" (no
+    answer expected). Defaults to "reply" when in_reply_to is set, else "ask".
+
+    Replies are capped at MESSAGE_MAX_REPLY_DEPTH (default 6) per thread: two
+    idle agents answering each other would otherwise trade messages until one
+    runs out of context. Past the cap this raises — stop replying, mark the
+    thread read, and surface it to the user instead.
+    """
+    return await messaging.send(
+        body=body,
+        to_project=to_project,
+        subject=subject,
+        kind=kind,
+        from_project=from_project,
+        from_session=from_session,
+        in_reply_to=in_reply_to,
+    )
+
+
+@mcp.tool()
+async def message_inbox(
+    project: str,
+    status: str = "unread",
+    limit: int = 20,
+    include_sent: bool = False,
+) -> dict[str, Any]:
+    """Messages addressed to `project` — what /start reads for its 💬 block,
+    and the recovery path when no live listener is armed (a missed
+    notification loses nothing; the row just stays 'unread' until read here
+    or via message_thread). status: "unread" (default), "read", "answered",
+    or "all". include_sent=True additionally returns this project's own sent
+    'ask' messages that nobody has answered yet ('awaiting_reply'), so a
+    session can see what it is still waiting on.
+
+    Bodies longer than 4000 characters come back truncated
+    (body_truncated=True) — call message_thread for the full text."""
+    return await messaging.inbox(
+        project=project, status=status, limit=limit, include_sent=include_sent
+    )
+
+
+@mcp.tool()
+async def message_thread(message_id: int) -> dict[str, Any]:
+    """Full conversation containing `message_id`, oldest first. Accepts ANY
+    message id in the thread, not just the root — pass the id straight from
+    a 💬 notification or a message_inbox row. Always read the whole thread
+    before replying: a notification/inbox preview is truncated and is not
+    the message."""
+    return await messaging.thread(message_id)
+
+
+@mcp.tool()
+async def message_mark(message_id: int, status: str = "read") -> dict[str, Any]:
+    """Mark a message 'read' or 'answered'. Returns claimed=False if it was
+    already out of 'unread' — this is an atomic claim, so if two sessions of
+    the same project are both live, exactly one of them wins the message and
+    the other must not also act on it. Call this before acting on a message,
+    and stop if claimed is False."""
+    return await messaging.mark(message_id, status=status)
 
 
 # ---------------------------------------------------------------------

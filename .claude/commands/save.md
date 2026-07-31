@@ -16,8 +16,9 @@ project slug from `.claude/settings.json` first; all calls below use it.
    <YYYY-MM-DD>", body=<what was completed today>)`. Each session gets its
    own progress node; unlike a growing `progress.md`, these never need
    trimming or archiving — they simply aren't read at session start
-   (`/start` only reads `memory_active` + `memory_tasks`), and surface later
-   only if `memory_search` finds them relevant to something.
+   (`/start` only reads `memory_active` + `memory_tasks` + `message_inbox`),
+   and surface later only if `memory_search` finds them relevant to
+   something.
 
 Be brief and factual. Focus on what the next session needs to know to
 continue immediately.

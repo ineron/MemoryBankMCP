@@ -11,7 +11,12 @@ Read `.claude/settings.json` for `project.slug` (create the project first via
 All calls below use this slug.
 
 ### 2. Context Loading
-Call **only** two tools: `memory_active(project)` and `memory_tasks(project)`.
+Call **only** three tools: `memory_active(project)`, `memory_tasks(project)`,
+and `message_inbox(project)`. `message_inbox` is admitted to this short list
+because it costs what `memory_tasks` costs — one partial-index lookup with a
+bounded `limit` — and computes no embedding, so it doesn't touch the
+knowledge graph any more than `memory_tasks` does.
+
 Do not call `memory_search` or `memory_get` here — session start is not the
 place to explore the knowledge graph. Those happen later, scoped to a
 specific task, via the `memory-scan` subagent from `/workflow:understand`.
@@ -57,6 +62,89 @@ Each task row carries:
 Do not drop the Topic or Depends/Related columns when presenting the table —
 report every column exactly as returned.
 
+### 4. Arm live message delivery
+
+Read `.mcp.json` at the project root and take
+`mcpServers["memory-bank"].command` — the absolute path to the shared
+server venv's python. Arm a persistent Monitor with:
+
+```
+Monitor({
+  command:     "<that python> -u -m memory_mcp.listener --project <slug>",
+  description: "inter-agent messages for <slug>",
+  persistent:  true,
+  timeout_ms:  3600000
+})
+```
+
+Expect a `[mb-listener] ready on mb_msg_<id> for <slug> — N unread
+message(s) replayed` line shortly after. If it instead prints `FATAL ...`,
+report that line and continue anyway — the 💬 block below still works by
+polling `message_inbox` on each future `/start`, it just won't notify live.
+
+Do not arm this twice in one session — if the user reruns `/start`, skip
+this step (a second listener for the same project stands by rather than
+double-delivering, but there's no reason to spawn it again).
+
+### 5. Handling a 💬 message notification
+
+A live listener notification looks like:
+`💬 msg#412 ❓ ask from ledgyx-core/... [thread 412 depth 0 ] ... — preview text`.
+It is an event, not a user turn — never interrupt an in-flight tool call or
+edit to react to one; handle it once the current step finishes. Then:
+
+1. `message_thread(N)` — always read the whole thread, never just the
+   notification preview (it's truncated at 200 characters).
+2. `message_mark(N, "read")` before acting. If it returns `claimed: False`,
+   another session already took it — stop, do nothing further.
+3. By `kind`:
+   - **`fyi`** → mention it to the user in one line. If it names work this
+     project should do, file it the normal cross-project way
+     (`memory_upsert(project=<this>, kind="task",
+     filed_from_project=<sender>)`), then send one `fyi` reply confirming.
+   - **`ask`, `replies_left > 0`** → answer autonomously, no user
+     confirmation needed: pull the answer from this repo and, if real
+     retrieval is needed, dispatch `memory-scan`. Then
+     `message_send(in_reply_to=N, body=...)` with no routing arguments.
+   - **`ask`, `replies_left == 0`** → do **not** reply. Surface it instead:
+     "thread T hit the reply-depth cap; it needs you."
+4. **Autonomy has a hard boundary.** Answering questions, reading code,
+   running read-only commands, and filing inbox tasks are in scope.
+   Editing files, running migrations, or committing *because another
+   project asked* are not — reply describing what you would do and let
+   this session's user decide.
+5. Every reply must be self-contained (full paths, slugs, task numbers) —
+   the receiving agent shares none of this session's context.
+
+### 6. Cross-project requests: send, don't do it yourself
+
+If at any point this session — not just while handling an incoming 💬
+message — decides something needs doing or checking in a *different*
+project (the root cause is actually upstream, a question only that
+project's session can answer, a change belongs in its code), do **not**
+switch into that project's repo and do it yourself, even if you happen to
+have filesystem access to it. This is the mirror of step 5's autonomy
+boundary: an incoming ask doesn't earn write access to *this* project's
+code, and symmetrically, wanting something from another project doesn't
+earn *this* session write access to *that* project's code. The channel is
+the boundary in both directions.
+
+1. Check `project_list()` for the target project's slug.
+2. **Found** — send it through the channel instead of acting on it
+   yourself:
+   - a question, notice, or anything conversational → `message_send(
+     to_project=<slug>, from_project=<this project's slug>, kind="ask"
+     or "fyi", ...)`.
+   - an actual work item for them to do → `memory_upsert(project=<slug>,
+     kind="task", filed_from_project=<this project's slug>, ...)` — lands
+     in their 📥 inbox.
+3. **Not found** (unlikely — means the project was never registered in
+   this memory bank). Do not guess, proceed anyway, or silently skip it.
+   Tell the user directly and let them pick:
+   - do it yourself right now, in this session, or
+   - wait — leave it, and try again once the project is registered, or
+   - skip it entirely.
+
 ## Output
 
 Present exactly in this format:
@@ -82,6 +170,16 @@ Present exactly in this format:
 | # | Task | Priority | Importance | Topic | Filed from |
 |---|------|----------|------------|-------|------------|
 | 1 | ...  | 🟡5 | ⭐⭐⭐ | bug | ledgyx-landing |
+
+**💬 Messages:** *(omit this block entirely if `message_inbox` returns nothing)*
+
+| ID | From | Kind | Subject | Age | Thread |
+|----|------|------|---------|-----|--------|
+| 412 | ledgyx-core | ❓ ask | memory_tasks inbox split | 2h | 412 · 6 replies left |
+
+📥 Filed = work another project wants done here. 💬 Messages = a
+conversation another project started. Different tables, different tools,
+on purpose.
 
 **Recommended: start with task #[N]** — [one line why]
 

@@ -137,7 +137,8 @@ flowchart TD
 
 ### Core Steps Explained
 
-1. **Context Review**: `/start` reads `memory_active` + `memory_tasks` only — no broad scan
+1. **Context Review**: `/start` reads `memory_active` + `memory_tasks` +
+   `message_inbox` only — no broad scan
 2. **Task Assessment**: Analyze task complexity, risk, and required approach
 3. **Plan & Decompose** (Complex Tasks): Break down complex tasks into manageable subtasks with clear implementation strategy
 4. **Action Execution**: Implement solution using appropriate methodology
@@ -176,7 +177,7 @@ and any `task` nodes as they track current state.
 
 ## Operational Principles
 
-- Start each session by loading `memory_active` + `memory_tasks` — nothing more
+- Start each session by loading `memory_active` + `memory_tasks` + `message_inbox` — nothing more
 - Apply documented patterns and decisions consistently
 - Document significant changes and decisions promptly
 - Maintain Memory Bank accuracy as the foundation for effective assistance
@@ -185,7 +186,7 @@ and any `task` nodes as they track current state.
 
 As a project's Memory Bank grows, reading everything at session start burns most of the context budget before any work happens. The DB backend keeps `/start` cheap regardless of project size by construction:
 
-- **`memory_active` + `memory_tasks` are the only calls `/start` makes.** The single `active` node must be self-sufficient for triage: project summary, current focus, blocker. Tasks come from `memory_tasks`, never reconstructed by scanning `progress` nodes.
+- **`memory_active` + `memory_tasks` + `message_inbox` are the only calls `/start` makes.** The single `active` node must be self-sufficient for triage: project summary, current focus, blocker. Tasks come from `memory_tasks`, never reconstructed by scanning `progress` nodes. `message_inbox` is admitted alongside them because it costs the same as `memory_tasks` (one partial-index lookup, bounded `limit`) and computes no embedding — see "Inter-Project Messaging" below.
 - **Deep nodes load on demand, filtered, not in a block.** Once a task is chosen, `/workflow:understand` dispatches the **`memory-scan`** subagent (`.claude/agents/memory-scan.md`) rather than reading broadly. This is the second half of what makes this cheap — see "Scan-and-Report Pattern" below.
 - **`progress` and `devenv` nodes are write-mostly, narrow-read.** They're never read in bulk — they surface only when `memory_search` finds them relevant to an actual query. There is nothing to archive: a node that hasn't been searched for in months costs nothing sitting in Postgres, unlike a markdown file that has to be skimmed in full to find anything in it.
 
@@ -208,6 +209,50 @@ One Postgres instance holds memory for multiple, often-related projects (e.g. a 
 - **Deliberate cross-writes**: filing a note or task into a *different* project than the current session's requires naming that project's slug explicitly (`memory_upsert(project="other-slug", ..., filed_from_project="this-slug")`) — it cannot happen by accident. Cross-project *tasks* land with `status="inbox"`.
 - **Inbox surfacing**: `memory_tasks` returns `inbox` as a separate list from `tasks`, and `/start` renders it as its own block ("📥 Filed from other sessions") — nothing filed cross-project silently merges into the target project's own backlog.
 - **Cross-project edges**: `cross_ref` edges tie a filed node back to the context that produced it, in the *originating* project, retrievable via `memory_get(hops=1)`.
+
+## Inter-Project Messaging
+
+A second, deliberately separate axis alongside cross-project inbox tasks
+above: a `messages` table (`message_send`/`message_inbox`/`message_thread`/
+`message_mark`) for live conversation between two projects' sessions, rather
+than a durable work item.
+
+- **Two layers, two jobs.** An inbox task (`memory_upsert(..., kind="task",
+  filed_from_project=...)`) is durable backlog that survives being ignored
+  for weeks. A message is a live exchange — "I need to know X", "heads up,
+  Y changed" — meant to be answered promptly, not queued.
+- **Not a node.** Messages carry no embedding and no graph edges.
+  `memory_upsert` always calls `embed_one()` before touching Postgres, so a
+  chat-shaped write through that path would cost an API call per message and
+  would fail outright during an embedding-provider outage. The message
+  channel stays up through exactly that kind of outage.
+- **Postgres is the mailbox, `NOTIFY` is only the doorbell.** A missed live
+  notification loses nothing — the row stays `status='unread'` and surfaces
+  on the next `message_inbox` call (including the next `/start`) or the next
+  listener startup drain.
+- **Live delivery is external to the MCP server.** `server.py` is a
+  request/response stdio process and cannot push. Live delivery comes from
+  `server/memory_mcp/listener.py`, a standalone `LISTEN`/`NOTIFY` process
+  that `/start` arms via Claude Code's `Monitor` tool — every stdout line
+  becomes a chat notification. See `listener.py`'s module docstring for why
+  it can't reuse the shared connection pool.
+- **Reply-depth cap.** Replies are capped (`MESSAGE_MAX_REPLY_DEPTH`, default
+  6) and the depth is trigger-derived, never client-supplied — otherwise two
+  idle sessions answering each other autonomously would trade messages until
+  one exhausted its context. Past the cap, a session must stop and surface
+  the thread to its user rather than reply.
+- **Autonomy boundary.** A session may answer questions, read code, run
+  read-only commands, and file inbox tasks in response to a message, fully
+  autonomously. It may not edit files, run migrations, or commit *because
+  another project's session asked* — that requires this session's own user.
+- **The boundary runs both ways.** A session that decides something needs
+  doing or checking in a *different* project must not switch into that
+  project's repo and do it itself, even with filesystem access to it —
+  it sends a message (or files an inbox task, for actual work) to that
+  project's channel instead, after confirming the target slug exists via
+  `project_list()`. If it doesn't exist, the session asks its user how to
+  proceed (do it themselves / wait for the project to be registered / skip)
+  rather than guessing or acting anyway.
 
 ## Remember
 Each session starts completely fresh. The Memory Bank — now Postgres, reached only through the `memory-bank` MCP server — is the only persistent link to previous work. It must be maintained with precision and clarity, as effectiveness depends entirely on its accuracy.
