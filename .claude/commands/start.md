@@ -64,9 +64,21 @@ report every column exactly as returned.
 
 ### 4. Arm live message delivery
 
-Read `.mcp.json` at the project root and take
-`mcpServers["memory-bank"].command` — the absolute path to the shared
-server venv's python. Arm a persistent Monitor with:
+Before arming anything, check whether a listener is already running for
+this project — do not rely on remembering an earlier `/start` in this
+conversation, since that memory doesn't survive `/clear`, context
+compaction, or a second terminal running `/start` in the same project:
+
+```
+pgrep -f "memory_mcp.listener --project <slug>"
+```
+
+- **A pid comes back** — a listener is already live for `<slug>` (from this
+  session or another). Skip arming a new Monitor entirely and say so ("live
+  message delivery already running, pid `<pid>`").
+- **No pid** — proceed. Read `.mcp.json` at the project root and take
+  `mcpServers["memory-bank"].command` — the absolute path to the shared
+  server venv's python. Arm a persistent Monitor with:
 
 ```
 Monitor({
@@ -82,9 +94,12 @@ message(s) replayed` line shortly after. If it instead prints `FATAL ...`,
 report that line and continue anyway — the 💬 block below still works by
 polling `message_inbox` on each future `/start`, it just won't notify live.
 
-Do not arm this twice in one session — if the user reruns `/start`, skip
-this step (a second listener for the same project stands by rather than
-double-delivering, but there's no reason to spawn it again).
+The `pgrep` check keeps the *process count* down (one listener per
+project, not one per `/start`). It's a belt-and-suspenders layer on top of
+the Postgres advisory lock already in `listener.py`, which guarantees
+correctness even if two listeners somehow end up running at once — a
+second one stands by and never double-delivers. `pgrep` avoids paying for
+that second idle process in the first place.
 
 ### 5. Handling a 💬 message notification
 
