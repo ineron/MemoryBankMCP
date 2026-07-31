@@ -170,7 +170,13 @@ async def main_async(args: argparse.Namespace) -> None:
         sys.exit(1)
 
     existing = read_existing_project_meta(project_dir)
-    slug = args.slug or existing.get("name") or project_dir.name
+    # Bug fixed 2026-07-31: this used to fall back to existing.get("name"),
+    # not existing.get("slug"). Whenever a project's display name differed
+    # from its registered slug even just in case (e.g. name="StayHugCRM",
+    # slug="stayhugcrm"), re-running the installer without --slug silently
+    # registered a SECOND project under the name-derived slug instead of
+    # updating the original one.
+    slug = args.slug or existing.get("slug") or existing.get("name") or project_dir.name
     name = args.name or existing.get("name") or slug
     description = args.description or existing.get("description", "")
     group = args.group
