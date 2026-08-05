@@ -112,23 +112,39 @@ edit to react to one; handle it once the current step finishes. Then:
    notification preview (it's truncated at 200 characters).
 2. `message_mark(N, "read")` before acting. If it returns `claimed: False`,
    another session already took it — stop, do nothing further.
-3. By `kind`:
-   - **`fyi`** → mention it to the user in one line. If it names work this
-     project should do, file it the normal cross-project way
-     (`memory_upsert(project=<this>, kind="task",
-     filed_from_project=<sender>)`), then send one `fyi` reply confirming.
-   - **`ask`, `replies_left > 0`** → answer autonomously, no user
-     confirmation needed: pull the answer from this repo and, if real
-     retrieval is needed, dispatch `memory-scan`. Then
+3. First decide: is this session **idle** (nothing else in flight this
+   turn) or **mid-task** (already partway through implementing something
+   else this session)? "Mid-task" means actual work underway, not "the
+   user hasn't typed in a while" — if unsure, treat it as idle.
+4. By `kind`:
+   - **`fyi`/`ask` naming actual work (a fix, a change, an
+     implementation), session idle** → pick it up now, in this session,
+     the same way it would pick up a task its own user handed it —
+     through the normal Claude Code permission prompts, with the normal
+     judgment about risky/destructive/hard-to-reverse steps. Don't just
+     acknowledge and file it for later when nothing is stopping you from
+     starting. Reply when done (or when you hit something that needs this
+     session's user) summarizing what happened.
+   - **`fyi`/`ask` naming actual work, session mid-task** → don't context
+     switch away from what's already underway. File it the normal
+     cross-project way (`memory_upsert(project=<this>, kind="task",
+     filed_from_project=<sender>)`) so it survives, then reply that it's
+     queued and, briefly, what this session is currently doing instead.
+   - **`ask` that's purely informational, `replies_left > 0`** → answer
+     autonomously regardless of idle/mid-task: pull the answer from this
+     repo and, if real retrieval is needed, dispatch `memory-scan`. Then
      `message_send(in_reply_to=N, body=...)` with no routing arguments.
    - **`ask`, `replies_left == 0`** → do **not** reply. Surface it instead:
      "thread T hit the reply-depth cap; it needs you."
-4. **Autonomy has a hard boundary.** Answering questions, reading code,
-   running read-only commands, and filing inbox tasks are in scope.
-   Editing files, running migrations, or committing *because another
-   project asked* are not — reply describing what you would do and let
-   this session's user decide.
-5. Every reply must be self-contained (full paths, slugs, task numbers) —
+5. **The boundary is idle-vs-mid-task, not read-vs-write.** An idle
+   session may edit files and commit because of a cross-project request,
+   same as it would for its own user — Claude Code's permission mode is
+   the actual gate on that, not an extra memory-bank rule on top of it.
+   What stays off-limits regardless of idle/mid-task: dropping in-flight
+   work to go handle someone else's request, and anything that pushes,
+   deploys, or force-touches shared state as a side effect of an incoming
+   message.
+6. Every reply must be self-contained (full paths, slugs, task numbers) —
    the receiving agent shares none of this session's context.
 
 ### 6. Cross-project requests: send, don't do it yourself
@@ -138,11 +154,14 @@ message — decides something needs doing or checking in a *different*
 project (the root cause is actually upstream, a question only that
 project's session can answer, a change belongs in its code), do **not**
 switch into that project's repo and do it yourself, even if you happen to
-have filesystem access to it. This is the mirror of step 5's autonomy
-boundary: an incoming ask doesn't earn write access to *this* project's
-code, and symmetrically, wanting something from another project doesn't
-earn *this* session write access to *that* project's code. The channel is
-the boundary in both directions.
+have filesystem access to it. This isn't the same rule as step 5's
+idle-session autonomy — that's about the *target* project's own session
+choosing to act on a request addressed to it. Here there is no session for
+the target project in this context, only this session reaching outside its
+own project on its own initiative, which is exactly what the channel
+exists to prevent. Send the request through and let that project's own
+session — idle or not — decide, the same way this session gets to decide
+for itself.
 
 1. Check `project_list()` for the target project's slug.
 2. **Found** — send it through the channel instead of acting on it

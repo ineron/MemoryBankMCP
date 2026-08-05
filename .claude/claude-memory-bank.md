@@ -241,10 +241,16 @@ than a durable work item.
   idle sessions answering each other autonomously would trade messages until
   one exhausted its context. Past the cap, a session must stop and surface
   the thread to its user rather than reply.
-- **Autonomy boundary.** A session may answer questions, read code, run
-  read-only commands, and file inbox tasks in response to a message, fully
-  autonomously. It may not edit files, run migrations, or commit *because
-  another project's session asked* — that requires this session's own user.
+- **Autonomy boundary — idle vs. mid-task, not read vs. write.** An idle
+  session (nothing else in flight this turn) acts on a cross-project
+  request for actual work the same way it would act on a task from its
+  own user: it can read code, edit files, and commit, gated by Claude
+  Code's own permission prompts rather than by an extra memory-bank rule
+  that blanket-forbids acting just because the request came from another
+  project. A session that's mid-task doesn't context-switch — it files
+  the request as a durable inbox task (`memory_upsert(..., kind="task",
+  filed_from_project=...)`) and replies that it's queued, so the request
+  survives without derailing the work already underway.
 - **The boundary runs both ways.** A session that decides something needs
   doing or checking in a *different* project must not switch into that
   project's repo and do it itself, even with filesystem access to it —
