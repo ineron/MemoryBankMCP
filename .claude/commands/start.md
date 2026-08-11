@@ -70,8 +70,20 @@ conversation, since that memory doesn't survive `/clear`, context
 compaction, or a second terminal running `/start` in the same project:
 
 ```
-pgrep -f "memory_mcp.listener --project <slug>"
+pgrep -f "memory_mcp\.listener --project <slug>$"
 ```
+
+The trailing `$` is load-bearing, not cosmetic: an unanchored pattern also
+matches the Bash-tool wrapper process that is, at that instant, running the
+`pgrep` command itself — its command line is `bash -c '... eval
+'"'"'pgrep -f "memory_mcp.listener --project <slug>"'"'"' ...'`, which
+contains the search string as a literal substring. That wrapper is a real,
+momentarily-running process, so it comes back as a false-positive pid
+indistinguishable from a genuine listener, then exits immediately after —
+producing exactly the "already running, pid `<pid>`" false claim with no
+listener actually armed. The real listener's command line ends exactly at
+`--project <slug>` with nothing after it, so anchoring with `$` excludes
+the wrapper while still matching the real process.
 
 - **A pid comes back** — a listener is already live for `<slug>` (from this
   session or another). Skip arming a new Monitor entirely and say so ("live
@@ -178,6 +190,20 @@ for itself.
    - do it yourself right now, in this session, or
    - wait — leave it, and try again once the project is registered, or
    - skip it entirely.
+
+### 7. Session compliance checklist
+
+For the rest of this session (every reply, not just this one), end your
+message with a one-line checklist confirming the two easy-to-forget rules
+from this file are still active, right above the heartbeat marker from
+`~/.claude/CLAUDE.md`:
+
+`🔒 no cross-project edits (§6) | 📡 listener: <armed pid <pid> | already running pid <pid> | not armed>`
+
+Source the listener state from what step 4 actually found — don't guess.
+If you ever catch yourself about to edit another project's files directly
+instead of sending a message per §6, that's the checklist failing to do its
+job — stop and reread §6 rather than proceeding.
 
 ## Output
 

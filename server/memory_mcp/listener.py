@@ -37,6 +37,7 @@ import asyncio
 import json
 import os
 import sys
+import time
 from typing import Any
 
 import asyncpg
@@ -51,6 +52,11 @@ from . import db  # noqa: E402 — must follow load_dotenv
 
 HEARTBEAT_SECONDS = 45
 RECONNECT_MIN, RECONNECT_MAX = 2.0, 60.0
+# A connection that stays up at least this long before failing again counts
+# as recovered: the next failure is a fresh outage, not a continuation of
+# the last one, so backoff should restart from RECONNECT_MIN rather than
+# keep escalating from wherever the prior outage left it.
+BACKOFF_RESET_AFTER = RECONNECT_MAX
 STANDBY_POLL_SECONDS = 15
 SEEN_CAP = 4000
 LOCK_CLASS = 19778  # 'M','B' on a phone keypad — advisory-lock namespace
@@ -93,6 +99,7 @@ class Listener:
         self.queue: asyncio.Queue[dict] = asyncio.Queue(maxsize=1000)
         self.dead = asyncio.Event()
         self.degraded = False
+        self.stable_since: float | None = None
 
     def _first_time(self, mid: int) -> bool:
         """False if already emitted. Needed because the startup drain and
@@ -191,6 +198,7 @@ class Listener:
             pending = await self._drain_unread(conn) if self.drain else 0
             status(f"ready on {self.channel} for {self.slug} — {pending} unread message(s) replayed")
             self.degraded = False
+            self.stable_since = time.monotonic()
 
             tasks = {
                 asyncio.create_task(self._consume()),
@@ -237,14 +245,22 @@ async def run(slug: str, drain: bool) -> int:
     backoff = RECONNECT_MIN
     while True:
         try:
+            # run_once() never returns without raising — it only exits via
+            # an exception or the explicit ConnectionResetError below — so
+            # backoff is reset on the *next* failure instead, based on how
+            # long the connection stayed up (see BACKOFF_RESET_AFTER).
             await listener.run_once()
-            backoff = RECONNECT_MIN
         except FatalError as exc:
             status(f"FATAL {exc}")
             return 2
         except asyncio.CancelledError:
             raise
         except Exception as exc:
+            if (
+                listener.stable_since is not None
+                and time.monotonic() - listener.stable_since >= BACKOFF_RESET_AFTER
+            ):
+                backoff = RECONNECT_MIN
             # Report the *transition*, not every attempt: a 10-minute DB
             # outage must not become 300 chat notifications. Recovery
             # announces itself via the "ready on ..." line in run_once.
