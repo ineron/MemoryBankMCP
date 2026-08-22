@@ -22,6 +22,7 @@ This project replaces the file store with a small MCP server backed by Postgres 
 - **One-command installer** — point it at a project directory and it backs up any existing Claude Code config, wires up the new commands, registers the project, and — if a legacy `memory-bank/*.md` tree exists — previews the import (node counts, warnings, zero API cost) before spending a single real embedding call.
 - **Legacy importer** — turns an existing file-based memory bank into nodes: task tables become graded task nodes with real dependency edges, dated progress logs, topic-tagged environment facts, YAML-frontmatter files, and monthly changelog archives are all handled, not just flattened into one blob.
 - **Inter-agent messaging** — a conversational channel between projects (`message_send`/`message_inbox`/`message_thread`/`message_mark`), separate from task filing: no embedding computed per message, live delivery via a standalone `LISTEN`/`NOTIFY` listener process instead of polling, and a reply-depth cap so an autonomous back-and-forth can't run away.
+- **Codegraph plugin (optional)** — a tree-sitter based function/class/call map of a project's own source tree, stored in its own droppable `codegraph` Postgres schema in the same database. Not installed by default; enable per-project with the `codegraph` extra. See [Optional plugins](server/README.md#optional-plugins) in `server/README.md`.
 
 ## Cross-project filing, by example
 
@@ -93,15 +94,16 @@ Then, in that project's own Claude Code session:
 | `/save` | End-of-session checkpoint: updates the current-focus node, logs progress, keeps tasks current |
 | `/scan-env` | Scans the project for environment facts (connections, ports, auth, gotchas) and records them as searchable nodes |
 | `/projects` | Dashboard overview of every project connected to the memory bank |
-| `/message` | Message another project's Claude session, or read this project's message inbox/awaiting-reply list |
+| `/message` | Message another project's Claude session, reply within a thread, or read this project's message inbox/awaiting-reply list |
 | `/workflow:understand` → `/workflow:plan` → `/workflow:execute` → `/workflow:update-memory` | A structured task loop; `understand` delegates retrieval to the `memory-scan` subagent, `plan` requires explicit approval before implementation |
+| `/scan-code` | (Optional codegraph plugin) (Re)builds this project's function/class/call map, or answers a specific "what calls X" |
 | `/commit` | Gathers `git status`/`diff`/`log` and creates a single commit |
 
 ## Repository layout
 
 ```
 .claude/                    # the Claude Code integration
-  commands/                 # slash commands (see table above)
+  commands/                 # slash commands (see table above), workflow/ for the understand→plan→execute→update-memory loop
   agents/memory-scan.md     # the scan-and-report subagent
   reference/                # detail docs commands read on demand, not unconditionally
   claude-memory-bank.md     # full design rationale — read this for the "why"
@@ -115,6 +117,7 @@ server/                     # the MCP server itself
     messaging.py              # message_send/inbox/thread/mark logic
     listener.py               # standalone LISTEN/NOTIFY process for live message delivery
     migrations/               # schema migrations for an already-running database
+    codegraph/                # optional plugin: tree-sitter function/class/call map, own Postgres schema
   scripts/install.py         # one-command project connector
   tests/manual_*.py          # smoke tests (EMBED_PROVIDER=mock, no API key needed)
 ```
