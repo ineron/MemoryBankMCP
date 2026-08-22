@@ -5,6 +5,6 @@ CLAUDE.md
 # Runtime/session-local state — not project content
 .claude/scheduled_tasks.lock
 .claude/settings.local.json
-
+articles/
 # Machine-specific absolute path — copy .mcp.json.example instead
 .mcp.json
