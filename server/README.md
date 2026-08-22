@@ -133,6 +133,32 @@ vector with no network call or API key, used only by the tests in
 `tests/manual_*.py`. Never point it at data you actually want to search
 over meaningfully; it has no semantic quality.
 
+## Optional plugins
+
+### codegraph
+
+Builds a function/class/method hierarchy plus a best-effort calls/imports
+graph for a project's own source tree (tree-sitter based, Python only for
+now), stored in its own `codegraph` Postgres schema in the same database —
+fully separable from the core memory bank (`DROP SCHEMA codegraph CASCADE;`
+removes it without touching `nodes`/`edges`/`messages`). See
+`memory_mcp/codegraph/__init__.py` and `.claude/commands/scan-code.md` for
+the full design and usage.
+
+Not installed by default — the core server works identically without it.
+To enable:
+
+```bash
+cd server
+.venv/bin/pip install -e '.[codegraph]'   # tree-sitter + tree-sitter-python
+.venv/bin/python -m memory_mcp.codegraph.init_schema
+```
+
+Then restart the MCP server connection — it only registers the
+`codegraph_build`/`codegraph_map`/`codegraph_deps`/`codegraph_search`/
+`codegraph_issues` tools if the import succeeds at process start, so a
+stale connection from before the extra was installed won't see them.
+
 ## Manual smoke tests
 
 Not a pytest suite — quick scripts exercising the tool functions directly
@@ -149,6 +175,10 @@ EMBED_PROVIDER=mock python tests/manual_phase5.py   # markdown importer: task gr
                                                      # edges, dated progress, devenv topic-splitting
 EMBED_PROVIDER=mock python tests/manual_messages.py # messaging: round trip, reply derivation, depth
                                                      # cap, trigger-level guards, NOTIFY delivery
+EMBED_PROVIDER=mock python tests/manual_codegraph.py  # codegraph plugin: incremental build, cross-file
+                                                       # call resolution, stale-edge re-resolution, issues
+                                                       # report, file-removal cascade (needs the `codegraph`
+                                                       # extra installed + its schema applied — see below)
 ```
 
 These scripts create real projects (`test-ledgyx`/`test-ledgyx-core`/
@@ -164,7 +194,7 @@ import asyncio
 from memory_mcp import db
 async def main():
     for slug in ('test-ledgyx-core', 'test-ledgyx-landing', 'stayhug-legacy-import-test',
-                 'test-msg-a', 'test-msg-b'):
+                 'test-msg-a', 'test-msg-b', 'test-codegraph-manual'):
         row = await db.fetchrow('SELECT id FROM projects WHERE slug = \$1', slug)
         if row:
             await db.execute('DELETE FROM projects WHERE id = \$1', row['id'])

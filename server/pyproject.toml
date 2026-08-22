@@ -12,6 +12,15 @@ dependencies = [
     "python-dotenv>=1.0",
 ]
 
+[project.optional-dependencies]
+# Optional plugin: memory_mcp/codegraph/ (function/class/call map). Add one
+# tree-sitter-<language> package per supported language.
+codegraph = [
+    "tree-sitter>=0.23",
+    "tree-sitter-python>=0.23",
+    "pathspec>=0.12",
+]
+
 [build-system]
 requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"

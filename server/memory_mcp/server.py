@@ -13,11 +13,15 @@ Tool groups (see plan doc for full rationale):
     (a separate conversational channel from the inbox-task mechanism above —
     see messaging.py and listener.py)
   - migration (phase 5): memory_import
+  - codegraph plugin (optional, see memory_mcp/codegraph/): codegraph_build,
+    codegraph_map, codegraph_deps, codegraph_search, codegraph_issues —
+    registered only if the `codegraph` extra is installed
 """
 
 from __future__ import annotations
 
 import os
+import sys
 from pathlib import Path
 from typing import Any, Optional
 
@@ -34,6 +38,21 @@ from .importer import import_markdown_tree
 load_dotenv(os.path.join(os.path.dirname(__file__), "..", ".env"))
 
 mcp = FastMCP("memory-bank")
+
+# Optional plugin: codegraph (function/class/call map). Only available if
+# the `codegraph` extra (tree-sitter + a tree-sitter-<language> grammar) was
+# installed — an install that never opted in gets no codegraph_* tools and
+# no other change in behavior. See memory_mcp/codegraph/__init__.py.
+try:
+    from .codegraph import tools as _codegraph_tools
+except ImportError:
+    _codegraph_tools = None
+    print(
+        "[memory-bank] codegraph plugin not available (optional extra not "
+        "installed) — codegraph_* tools disabled. "
+        "See server/README.md's 'Optional plugins' section to enable it.",
+        file=sys.stderr,
+    )
 
 
 # ---------------------------------------------------------------------
@@ -607,6 +626,14 @@ async def memory_import(project: str, path: str, dry_run: bool = False) -> dict[
     a large import (real API calls, real cost/time)."""
     project_id = await db.resolve_project_id(project)
     return await import_markdown_tree(project_id, Path(path), dry_run=dry_run)
+
+
+# ---------------------------------------------------------------------
+# Optional plugin registration
+# ---------------------------------------------------------------------
+
+if _codegraph_tools is not None:
+    _codegraph_tools.register(mcp)
 
 
 def main() -> None:
