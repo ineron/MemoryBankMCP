@@ -537,12 +537,15 @@ async def message_send(
     for you to do". Use a message for "I need to know X" / "heads up, Y
     changed"; use an inbox task for a work item.
 
-    Replying: pass ONLY `in_reply_to` (plus `body`, and `kind` if you want
-    something other than "reply"). `to_project` and `from_project` are
-    derived from the parent message — do not pass routing arguments to a
-    reply, and do not open a new thread to continue an existing
-    conversation. Starting a new thread requires both `to_project` and
-    `from_project`.
+    Replying: pass `in_reply_to` AND `from_project` (plus `body`, and `kind`
+    if you want something other than "reply"). `from_project` is required on
+    a reply — it states which side of the conversation you're on, so a
+    reply to your own prior message in the thread keeps direction instead
+    of flipping it the way a reply to the other side's message does.
+    `to_project` is derived from the parent and `from_project` together —
+    do not pass it on a reply, and do not open a new thread to continue an
+    existing conversation. Starting a new thread requires both `to_project`
+    and `from_project`.
 
     kind: "ask" (you want an answer), "reply" (you are answering), "fyi" (no
     answer expected). Defaults to "reply" when in_reply_to is set, else "ask".

@@ -119,7 +119,7 @@ Expect a `[mb-listener] ready on mb_msg_<id> for your-project-slug — N
 unread message(s) replayed` line. It reconnects automatically on a dropped
 DB connection and stands by (rather than erroring) if another session is
 already listening for the same project. `MESSAGE_MAX_REPLY_DEPTH` (default
-`6`, see `.env.example`) caps how many times a thread can be replied to
+`10`, see `.env.example`) caps how many times a thread can be replied to
 before a session must stop and surface it to its user.
 
 ## Embedding provider

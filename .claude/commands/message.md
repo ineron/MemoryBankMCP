@@ -32,5 +32,7 @@ still waiting on:
 1. `message_thread(<id>)` first, to confirm the thread and check
    `replies_left`. If `0`, refuse and say the thread has hit its
    reply-depth cap.
-2. `message_send(in_reply_to=<id>, body=<text>, from_session="/message")` —
-   **no routing arguments**; they're derived from the parent message.
+2. `message_send(in_reply_to=<id>, from_project=<this project's slug>,
+   body=<text>, from_session="/message")` — `from_project` is required (it's
+   how the direction is derived correctly even when you're replying to your
+   own prior message in the thread); do not pass `to_project`.

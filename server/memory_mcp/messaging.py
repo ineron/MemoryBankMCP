@@ -23,7 +23,7 @@ from . import db
 # operator-tunable cap actually enforced here. Two idle autonomous agents
 # answering each other will otherwise trade messages until one exhausts its
 # context — the cap forces a human back into the loop instead.
-MAX_REPLY_DEPTH = int(os.environ.get("MESSAGE_MAX_REPLY_DEPTH", "6"))
+MAX_REPLY_DEPTH = int(os.environ.get("MESSAGE_MAX_REPLY_DEPTH", "10"))
 
 # A runaway body must not blow /start's or message_inbox's context budget;
 # message_thread has no cap and returns the full body regardless.
@@ -77,27 +77,45 @@ async def send(
                 "cannot route a reply to it"
             )
 
-        # Routing is derived from the parent, never taken fresh from the
-        # caller — a reply that disagreed with its own parent would be a
-        # silent misaddress. If the caller passed routing args anyway,
-        # they must agree with what's derived, or this raises.
-        derived_to_id = parent["from_project_id"]
-        derived_from_id = parent["to_project_id"]
+        # `to_project` is derived from the parent, but direction cannot be:
+        # an unconditional "swap the parent's from/to" is only correct when
+        # the parent is the OTHER side's message. When a project continues
+        # its own prior message in the thread (replying to something it
+        # sent itself), swapping again flips the message back at its own
+        # sender. `from_project` is required on every reply so the caller
+        # states which side of the conversation it's on; direction is then
+        # derived from that, not guessed from the parent alone.
+        if from_project is None:
+            raise ValueError(
+                "from_project is required when replying (in_reply_to is "
+                "set) — it identifies which side of the conversation you "
+                "are on, since replying to your own prior message must not "
+                "flip direction the way replying to the other side's "
+                "message does"
+            )
+        caller_id = await db.resolve_project_id(from_project)
+        parent_from_id = parent["from_project_id"]
+        parent_to_id = parent["to_project_id"]
+        if caller_id == parent_to_id:
+            # Parent was addressed to us — replying flips direction back.
+            derived_from_id, derived_to_id = parent_to_id, parent_from_id
+        elif caller_id == parent_from_id:
+            # Parent was our own message — continuing it keeps direction.
+            derived_from_id, derived_to_id = parent_from_id, parent_to_id
+        else:
+            raise ValueError(
+                f"from_project='{from_project}' is not a party to message "
+                f"{in_reply_to}'s conversation ({parent['from_slug']} <-> "
+                f"{parent['to_slug']}) — cannot determine reply direction"
+            )
         if to_project is not None:
             if await db.resolve_project_id(to_project) != derived_to_id:
                 raise ValueError(
                     f"in_reply_to={in_reply_to} routes to project "
-                    f"'{parent['from_slug']}', but to_project='{to_project}' "
-                    "was also passed and disagrees — omit to_project on a "
-                    "reply, it is derived from the parent"
-                )
-        if from_project is not None:
-            if await db.resolve_project_id(from_project) != derived_from_id:
-                raise ValueError(
-                    f"in_reply_to={in_reply_to} routes from project "
-                    f"'{parent['to_slug']}', but from_project='{from_project}' "
-                    "was also passed and disagrees — omit from_project on a "
-                    "reply, it is derived from the parent"
+                    f"'{parent['from_slug'] if caller_id == parent_to_id else parent['to_slug']}', "
+                    f"but to_project='{to_project}' was also passed and "
+                    "disagrees — omit to_project on a reply, it is derived "
+                    "from the parent and from_project"
                 )
 
         if parent["reply_depth"] + 1 > MAX_REPLY_DEPTH:

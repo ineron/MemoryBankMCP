@@ -34,10 +34,11 @@ from memory_mcp.server import (
 
 A = "test-msg-a"
 B = "test-msg-b"
+C = "test-msg-c"
 
 
 async def cleanup() -> None:
-    for slug in (A, B):
+    for slug in (A, B, C):
         row = await db.fetchrow("SELECT id FROM projects WHERE slug = $1", slug)
         if row:
             await db.execute("DELETE FROM projects WHERE id = $1", row["id"])
@@ -47,6 +48,7 @@ async def main() -> None:
     await cleanup()
     await project_create(slug=A, name="Messaging Test A")
     await project_create(slug=B, name="Messaging Test B")
+    await project_create(slug=C, name="Messaging Test C")
 
     # --- Test 1: round trip ---
     m1 = await message_send(
@@ -73,8 +75,8 @@ async def main() -> None:
     assert m1["id"] not in {m["id"] for m in a_inbox["messages"]}
     print("PASS: inbox one-directional visibility")
 
-    # --- Test 3: reply derivation with no routing args, parent auto-answered ---
-    reply = await message_send(in_reply_to=m1["id"], body="it's JSON: {sku, qty}")
+    # --- Test 3: reply derivation (from_project required), parent auto-answered ---
+    reply = await message_send(in_reply_to=m1["id"], from_project=B, body="it's JSON: {sku, qty}")
     assert reply["kind"] == "reply"
     assert reply["thread_id"] == m1["thread_id"]
     assert reply["reply_depth"] == 1
@@ -86,21 +88,55 @@ async def main() -> None:
     assert parent_row["read_at"] is not None
     print("PASS: reply derivation + parent auto-answered")
 
+    # --- Test 3b: regression for task #4 — replying to YOUR OWN prior
+    # message in the thread (continuing it, not answering the other side)
+    # must not flip direction. This was the bug: an unconditional swap of
+    # the parent's from/to flipped the message back at its own sender.
+    own_continuation = await message_send(
+        in_reply_to=reply["id"], from_project=B, body="also: qty must be > 0"
+    )
+    assert own_continuation["from_project"] == B
+    assert own_continuation["to_project"] == A
+    assert own_continuation["reply_depth"] == 2
+    print("PASS: reply to own prior message keeps direction (task #4 regression)")
+
+    # --- Test 3c: from_project is required on a reply, and must be a party
+    # to the conversation ---
+    try:
+        await message_send(in_reply_to=m1["id"], body="missing from_project")
+        assert False, "expected a reply with no from_project to raise"
+    except ValueError as e:
+        assert "from_project is required" in str(e)
+    try:
+        await message_send(in_reply_to=m1["id"], from_project="does-not-exist", body="x")
+        assert False, "expected an unknown from_project slug to raise"
+    except ValueError as e:
+        assert "Unknown project slug" in str(e)
+    print("PASS: from_project required + validated on a reply")
+
     # --- Test 4: thread lookup by a non-root id ---
     t = await message_thread(reply["id"])
     assert t["thread_id"] == m1["thread_id"]
-    assert [mm["id"] for mm in t["messages"]] == [m1["id"], reply["id"]]
-    assert t["max_depth"] == 1
+    assert [mm["id"] for mm in t["messages"]] == [m1["id"], reply["id"], own_continuation["id"]]
+    assert t["max_depth"] == 2
     assert set(t["participants"]) == {A, B}
     print("PASS: thread lookup by non-root id")
 
     # --- Test 5: reply-depth cap raises, thread stays intact ---
-    last_id = reply["id"]
-    for depth in range(1, MAX_REPLY_DEPTH):
-        r = await message_send(in_reply_to=last_id, body=f"reply at depth {depth + 1}")
+    # Alternates the sender each hop, like a real back-and-forth exchange,
+    # off the own_continuation branch created in test 3b.
+    last_id = own_continuation["id"]
+    last_sender = B
+    for depth in range(2, MAX_REPLY_DEPTH):
+        next_sender = A if last_sender == B else B
+        r = await message_send(
+            in_reply_to=last_id, from_project=next_sender, body=f"reply at depth {depth + 1}"
+        )
         last_id = r["id"]
+        last_sender = next_sender
     try:
-        await message_send(in_reply_to=last_id, body="one too many")
+        next_sender = A if last_sender == B else B
+        await message_send(in_reply_to=last_id, from_project=next_sender, body="one too many")
         assert False, "expected the reply-depth cap to raise"
     except ValueError as e:
         assert "reply-depth cap" in str(e)
@@ -114,6 +150,10 @@ async def main() -> None:
     # (the Python layer would normally prevent all three) ---
     root2 = await message_send(to_project=B, from_project=A, kind="ask", body="second thread root")
 
+    # A reply naming a third project not party to {A, B} must still raise —
+    # both "flip" (from=B,to=A) and "continue own message" (from=A,to=B)
+    # are now valid, so this has to reach outside the conversation to be
+    # genuinely misrouted.
     try:
         await db.execute(
             """
@@ -121,11 +161,11 @@ async def main() -> None:
             VALUES ((SELECT id FROM projects WHERE slug=$1),
                      (SELECT id FROM projects WHERE slug=$2), $3, 'misrouted')
             """,
-            B,
+            C,
             A,
             root2["id"],
         )
-        assert False, "expected a reply addressed to the wrong project to raise"
+        assert False, "expected a reply addressed to a non-participant project to raise"
     except asyncpg.exceptions.RaiseError:
         pass
 

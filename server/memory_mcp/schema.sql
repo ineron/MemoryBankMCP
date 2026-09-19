@@ -191,11 +191,28 @@ BEGIN
         END IF;
         NEW.thread_id   := parent.thread_id;
         NEW.reply_depth := parent.reply_depth + 1;
-        IF parent.from_project_id IS NOT NULL
-           AND NEW.to_project_id <> parent.from_project_id THEN
-            RAISE EXCEPTION
-                'reply to message % must be addressed to project % (its sender), got %',
-                parent.id, parent.from_project_id, NEW.to_project_id;
+        -- A reply must run between the same two projects already in this
+        -- conversation, in either direction: the other side replying back
+        -- (from/to flip relative to the parent), or a project continuing
+        -- its OWN prior message in the thread (from/to unchanged from the
+        -- parent). An earlier version of this check only allowed the first
+        -- case -- forcing every reply's to_project back to the parent's
+        -- sender unconditionally -- which broke the second case: it can't
+        -- tell "the other side is replying" from "I'm adding on to what I
+        -- just said", and flipped direction wrongly on the latter.
+        IF parent.from_project_id IS NOT NULL THEN
+            IF NOT (
+                (NEW.from_project_id = parent.to_project_id
+                 AND NEW.to_project_id = parent.from_project_id)
+                OR
+                (NEW.from_project_id = parent.from_project_id
+                 AND NEW.to_project_id = parent.to_project_id)
+            ) THEN
+                RAISE EXCEPTION
+                    'reply to message % must be between projects % and % (its participants), got from=% to=%',
+                    parent.id, parent.from_project_id, parent.to_project_id,
+                    NEW.from_project_id, NEW.to_project_id;
+            END IF;
         END IF;
     END IF;
     RETURN NEW;

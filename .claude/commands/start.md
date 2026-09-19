@@ -113,83 +113,59 @@ correctness even if two listeners somehow end up running at once — a
 second one stands by and never double-delivers. `pgrep` avoids paying for
 that second idle process in the first place.
 
+**If the listener ever needs re-arming mid-session** (a `Monitor` finished
+event reports the underlying process exited — e.g. it crashed after
+repeated DB-connection resets — not just a routine reconnect log line):
+re-issue *exactly* the same call as above, `persistent: true` (`timeout_ms`
+is then irrelevant — ignored when persistent). If `persistent` is available
+in your Monitor tool's schema, do not improvise a bounded `timeout_ms`
+instead — that produces an indefinite ~30-minute die/re-arm loop that burns
+a full turn (Bash + Monitor call + reply) every cycle purely to report
+"still idle," even though nothing is actually wrong.
+
+**But check first — `persistent` is not guaranteed to exist in every
+environment's Monitor tool.** If your tool's own schema doesn't offer it
+(only `command`/`description`/`timeout_ms`/`ws` accepted, and `timeout_ms`
+caps below what a truly indefinite watch would need — e.g. capped at
+1800000ms with no way around it), do **not** re-arm a bounded Monitor at
+all when it expires — not even once. It is tempting to read "don't loop
+*perpetually*" as "one re-arm is fine, just not an endless chain," but
+that reading is wrong: the first bounded re-arm costs the same turn
+(Bash + Monitor call + reply) as every subsequent one, and there is no
+signal available at that point to tell you this is the *last* one you'll
+need — so "re-arm once, then stop" degrades to the same repeating cycle
+as "re-arm forever," just discovered one cycle later. Treat every expiry
+of a bounded Monitor identically, starting with the first: let it lapse
+and fall back to polling. `message_inbox` at the next `/start` already
+covers correctness without live delivery (the same fallback already
+described above for the FATAL-on-startup case) — accept degraded,
+non-live delivery for the rest of *this* session rather than spending a
+turn on it. A fresh session (new `/start`) gets its own new bounded
+window regardless — that's expected, not a bug to chase.
+
 ### 5. Handling a 💬 message notification
 
 A live listener notification looks like:
 `💬 msg#412 ❓ ask from ledgyx-core/... [thread 412 depth 0 ] ... — preview text`.
 It is an event, not a user turn — never interrupt an in-flight tool call or
-edit to react to one; handle it once the current step finishes. Then:
+edit to react to one; handle it once the current step finishes.
 
-1. `message_thread(N)` — always read the whole thread, never just the
-   notification preview (it's truncated at 200 characters).
-2. `message_mark(N, "read")` before acting. If it returns `claimed: False`,
-   another session already took it — stop, do nothing further.
-3. First decide: is this session **idle** (nothing else in flight this
-   turn) or **mid-task** (already partway through implementing something
-   else this session)? "Mid-task" means actual work underway, not "the
-   user hasn't typed in a while" — if unsure, treat it as idle.
-4. By `kind`:
-   - **`fyi`/`ask` naming actual work (a fix, a change, an
-     implementation), session idle** → pick it up now, in this session,
-     the same way it would pick up a task its own user handed it —
-     through the normal Claude Code permission prompts, with the normal
-     judgment about risky/destructive/hard-to-reverse steps. Don't just
-     acknowledge and file it for later when nothing is stopping you from
-     starting. Reply when done (or when you hit something that needs this
-     session's user) summarizing what happened.
-   - **`fyi`/`ask` naming actual work, session mid-task** → don't context
-     switch away from what's already underway. File it the normal
-     cross-project way (`memory_upsert(project=<this>, kind="task",
-     filed_from_project=<sender>)`) so it survives, then reply that it's
-     queued and, briefly, what this session is currently doing instead.
-   - **`ask` that's purely informational, `replies_left > 0`** → answer
-     autonomously regardless of idle/mid-task: pull the answer from this
-     repo and, if real retrieval is needed, dispatch `memory-scan`. Then
-     `message_send(in_reply_to=N, body=...)` with no routing arguments.
-   - **`ask`, `replies_left == 0`** → do **not** reply. Surface it instead:
-     "thread T hit the reply-depth cap; it needs you."
-5. **The boundary is idle-vs-mid-task, not read-vs-write.** An idle
-   session may edit files and commit because of a cross-project request,
-   same as it would for its own user — Claude Code's permission mode is
-   the actual gate on that, not an extra memory-bank rule on top of it.
-   What stays off-limits regardless of idle/mid-task: dropping in-flight
-   work to go handle someone else's request, and anything that pushes,
-   deploys, or force-touches shared state as a side effect of an incoming
-   message.
-6. Every reply must be self-contained (full paths, slugs, task numbers) —
-   the receiving agent shares none of this session's context.
+Only if `message_inbox` returned something just now, or a listener
+notification arrives later this session: read
+`.claude/reference/message-handling.md` for the full triage procedure
+(idle-vs-mid-task, per-`kind` handling, reply-depth cap) before acting.
+Don't read it pre-emptively when there's nothing to handle — most `/start`
+runs have an empty inbox and never need it.
 
 ### 6. Cross-project requests: send, don't do it yourself
 
-If at any point this session — not just while handling an incoming 💬
-message — decides something needs doing or checking in a *different*
-project (the root cause is actually upstream, a question only that
-project's session can answer, a change belongs in its code), do **not**
-switch into that project's repo and do it yourself, even if you happen to
-have filesystem access to it. This isn't the same rule as step 5's
-idle-session autonomy — that's about the *target* project's own session
-choosing to act on a request addressed to it. Here there is no session for
-the target project in this context, only this session reaching outside its
-own project on its own initiative, which is exactly what the channel
-exists to prevent. Send the request through and let that project's own
-session — idle or not — decide, the same way this session gets to decide
-for itself.
-
-1. Check `project_list()` for the target project's slug.
-2. **Found** — send it through the channel instead of acting on it
-   yourself:
-   - a question, notice, or anything conversational → `message_send(
-     to_project=<slug>, from_project=<this project's slug>, kind="ask"
-     or "fyi", ...)`.
-   - an actual work item for them to do → `memory_upsert(project=<slug>,
-     kind="task", filed_from_project=<this project's slug>, ...)` — lands
-     in their 📥 inbox.
-3. **Not found** (unlikely — means the project was never registered in
-   this memory bank). Do not guess, proceed anyway, or silently skip it.
-   Tell the user directly and let them pick:
-   - do it yourself right now, in this session, or
-   - wait — leave it, and try again once the project is registered, or
-   - skip it entirely.
+If at any point this session decides something needs doing or checking in
+a *different* project — not just while handling an incoming 💬 message —
+read `.claude/reference/cross-project-requests.md` for the exact procedure
+before acting. Do not switch into that project's repo and do it yourself,
+even if you happen to have filesystem access to it; this applies whenever
+the moment arises during the session, not only at `/start` time, so don't
+read the reference file until it actually does.
 
 ### 7. Session compliance checklist
 
@@ -198,7 +174,7 @@ message with a one-line checklist confirming the two easy-to-forget rules
 from this file are still active, right above the heartbeat marker from
 `~/.claude/CLAUDE.md`:
 
-`🔒 no cross-project edits (§6) | 📡 listener: <armed pid <pid> | already running pid <pid> | not armed>`
+`🔵 no cross-project edits (§6) | 🔴 listener: <armed pid <pid> | already running pid <pid> | not armed>`
 
 Source the listener state from what step 4 actually found — don't guess.
 If you ever catch yourself about to edit another project's files directly

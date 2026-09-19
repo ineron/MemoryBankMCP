@@ -11,17 +11,38 @@ project slug from `.claude/settings.json` first; all calls below use it.
    title="Current focus", body=<focus/blockers/next-step>, id=<existing id
    or omit>)`. This updates the *same* node in place rather than piling up a
    new one each session — there should only ever be one live `active` node
-   per project.
+   per project. **Always pass the existing `id`** — omitting it creates a
+   second `active` node instead of updating the first, and `/start` only
+   ever reads the most-recently-updated one, so the older one silently
+   stops being seen (but keeps costing a row). If `memory_active` returns
+   more than one candidate or you're ever unsure whether one already
+   exists, check before writing rather than assuming there is none.
+
+   **Keep it short — a handful of bullet lines, not a session narrative.**
+   `/start` reads this node's *full* body on every single session start,
+   for as long as it stays current, so anything written here is a
+   recurring tax on every future `/start`, not a one-time cost. Target
+   "what the next session needs to know before it can pick a task" only:
+   current focus, open blocker, next step, maybe one line per carried-over
+   open item. Implementation detail, repro steps, what-was-tried-and-why,
+   commit hashes, and validation notes all belong in the progress node
+   below instead — that one is written once and read on demand
+   (`memory_search`/`memory_get`), never force-fed to every future
+   `/start`. If you find yourself writing more than ~15-20 lines into
+   `active`, that detail almost certainly belongs in the progress node or
+   in the relevant task node's own `body`, not here.
 2. **Progress log** — `memory_upsert(project, kind="progress", title="Progress
    <YYYY-MM-DD>", body=<what was completed today>)`. Each session gets its
    own progress node; unlike a growing `progress.md`, these never need
    trimming or archiving — they simply aren't read at session start
    (`/start` only reads `memory_active` + `memory_tasks` + `message_inbox`),
    and surface later only if `memory_search` finds them relevant to
-   something.
+   something. This is where the full narrative goes — the detail that
+   would bloat `active` if it lived there instead.
 
-Be brief and factual. Focus on what the next session needs to know to
-continue immediately.
+Be brief and factual in `active`. Focus on what the next session needs to
+know to continue immediately; put everything else in `progress` or in the
+task's own `body` — see above.
 
 ## Task Upkeep
 
