@@ -127,21 +127,41 @@ a full turn (Bash + Monitor call + reply) every cycle purely to report
 environment's Monitor tool.** If your tool's own schema doesn't offer it
 (only `command`/`description`/`timeout_ms`/`ws` accepted, and `timeout_ms`
 caps below what a truly indefinite watch would need — e.g. capped at
-1800000ms with no way around it), do **not** re-arm a bounded Monitor at
-all when it expires — not even once. It is tempting to read "don't loop
-*perpetually*" as "one re-arm is fine, just not an endless chain," but
-that reading is wrong: the first bounded re-arm costs the same turn
-(Bash + Monitor call + reply) as every subsequent one, and there is no
-signal available at that point to tell you this is the *last* one you'll
-need — so "re-arm once, then stop" degrades to the same repeating cycle
-as "re-arm forever," just discovered one cycle later. Treat every expiry
-of a bounded Monitor identically, starting with the first: let it lapse
-and fall back to polling. `message_inbox` at the next `/start` already
-covers correctness without live delivery (the same fallback already
-described above for the FATAL-on-startup case) — accept degraded,
-non-live delivery for the rest of *this* session rather than spending a
-turn on it. A fresh session (new `/start`) gets its own new bounded
-window regardless — that's expected, not a bug to chase.
+1800000ms with no way around it), **do re-arm it, every time it expires,
+for as long as the session runs** — going dark until the next `/start` is
+worse than the cost of re-arming, since it means zero live delivery for
+however long the session stays open. (An earlier version of this
+paragraph said the opposite — never re-arm a bounded Monitor, not even
+once — reasoning that "don't loop *perpetually*" was ambiguous enough to
+produce one wasted cycle. That traded a small, bounded cost for an
+unbounded one: it made every bounded-Monitor session go permanently dark
+after ~30 minutes, silently, for the rest of a potentially hours-long
+session. Wrong trade. The actual problem was never that re-arming
+happens — it's that each re-arm cycle used to cost a full reasoning turn
+to report nothing had changed. Fix the cost, not the re-arming.)
+
+**Make the re-arm mechanical, not conversational.** Handling this event
+is a health check, nothing more:
+
+1. `pgrep -f "memory_mcp\.listener --project <slug>$"` (same anchored
+   pattern as step 4's initial check).
+2. Pid found → the listener is already back (another path re-armed it,
+   or this notification is stale). Do nothing.
+3. No pid → re-issue *exactly* the same `Monitor(...)` call used to arm
+   it originally (same bounded `timeout_ms`, since `persistent` isn't
+   available here).
+
+Do not call `message_inbox`, `message_thread`, or any other retrieval
+tool as part of handling this event — that is a completely different
+event type (an actual 💬 message notification) with its own procedure in
+`.claude/reference/message-handling.md`; a Monitor expiring on its own
+carries no information about whether anything is unread. Do not write a
+narrative reply either — no "still waiting," no summary of what's
+outstanding, no re-deriving conversation state. One short status line
+confirming the re-arm (or nothing user-visible at all, if your harness
+permits a turn with no reply) is the entire budget for this event. A
+fresh session (new `/start`) still gets its own new bounded window
+regardless of any of this — expected, not a bug.
 
 ### 5. Handling a 💬 message notification
 
