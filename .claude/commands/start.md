@@ -106,6 +106,19 @@ message(s) replayed` line shortly after. If it instead prints `FATAL ...`,
 report that line and continue anyway — the 💬 block below still works by
 polling `message_inbox` on each future `/start`, it just won't notify live.
 
+If `server/memory_mcp/notifier.py` is deployed and configured (see
+`server/deploy/mb-notifier.service`, `server/.env`'s `ROUTINE_*` vars), the
+Monitor re-arm burden below is no longer the *only* path to getting
+notified: that daemon runs independently of any session and fires a
+claude.ai routine whenever a message stays unread with no listener around,
+so a closed terminal no longer means zero delivery until the next manual
+`/start`. It's a pointer only, not a substitute for steps 1–6 in
+`.claude/reference/message-handling.md` — a session still has to actually
+open and handle the message. Optionally check whether it's running with
+`pgrep -f "memory_mcp\.notifier$"` (reported only — never re-armed by this
+command; that daemon is not session-scoped) and mention its state in the
+checklist line in §7.
+
 The `pgrep` check keeps the *process count* down (one listener per
 project, not one per `/start`). It's a belt-and-suspenders layer on top of
 the Postgres advisory lock already in `listener.py`, which guarantees
@@ -127,21 +140,39 @@ a full turn (Bash + Monitor call + reply) every cycle purely to report
 environment's Monitor tool.** If your tool's own schema doesn't offer it
 (only `command`/`description`/`timeout_ms`/`ws` accepted, and `timeout_ms`
 caps below what a truly indefinite watch would need — e.g. capped at
-1800000ms with no way around it), **do re-arm it, every time it expires,
-for as long as the session runs** — going dark until the next `/start` is
-worse than the cost of re-arming, since it means zero live delivery for
-however long the session stays open. (An earlier version of this
-paragraph said the opposite — never re-arm a bounded Monitor, not even
-once — reasoning that "don't loop *perpetually*" was ambiguous enough to
-produce one wasted cycle. That traded a small, bounded cost for an
-unbounded one: it made every bounded-Monitor session go permanently dark
-after ~30 minutes, silently, for the rest of a potentially hours-long
-session. Wrong trade. The actual problem was never that re-arming
-happens — it's that each re-arm cycle used to cost a full reasoning turn
-to report nothing had changed. Fix the cost, not the re-arming.)
+1800000ms with no way around it):
 
-**Make the re-arm mechanical, not conversational.** Handling this event
-is a health check, nothing more:
+1. `pgrep -f "memory_mcp\.notifier$"` — is the offline notifier daemon
+   deployed on this machine (see `server/README.md`'s "Offline notifier"
+   section)?
+   - **Pid found** → **do not re-arm.** Let this Monitor window lapse and
+     stop there for the rest of the session. `mb-notifier` now covers
+     delivery for however long the session stays open past this point: it
+     fires a claude.ai routine (~`ROUTINE_GRACE_SECONDS`, default 90s,
+     after a message arrives) whenever no listener is currently armed for
+     this project — which, once this window lapses, is exactly this
+     session's own state. The routine only *notifies*; a real session
+     still has to open and handle the message per
+     `.claude/reference/message-handling.md`, so nothing is silently
+     dropped, it just stops being instant-in-this-chat past the first
+     ~30 minutes. One short status line noting the handoff (or nothing
+     user-visible, if your harness permits a turn with no reply) is the
+     entire budget for this event — do not keep re-checking `pgrep` for
+     the notifier on every future expiry either, since there won't be any:
+     nothing re-arms this Monitor again this session.
+   - **No pid** → `mb-notifier` isn't deployed here yet. Falling dark for
+     the rest of the session would mean zero delivery of any kind until
+     the next `/start`, which is worse than the cost of re-arming — so
+     **do re-arm it, every time it expires, for as long as the session
+     runs**, same as before. (This whole branch existed, unconditionally,
+     before `mb-notifier` shipped — see `notifier.py`'s own module
+     docstring and `server/README.md` for what it does and how to deploy
+     it. If it's missing on a machine you maintain, deploying it once
+     ends the mechanical-re-arm cost for every session on that machine,
+     not just this one.)
+
+**When re-arming (the "no pid" branch above), make it mechanical, not
+conversational.** Handling this event is a health check, nothing more:
 
 1. `pgrep -f "memory_mcp\.listener --project <slug>$"` (same anchored
    pattern as step 4's initial check).

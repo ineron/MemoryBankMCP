@@ -37,7 +37,7 @@ CREATE INDEX idx_projects_group ON projects(group_id);
 
 CREATE TYPE node_kind AS ENUM (
     'brief', 'product', 'pattern', 'tech',
-    'active', 'progress', 'devenv', 'task', 'plan', 'decision'
+    'active', 'progress', 'devenv', 'task', 'plan', 'decision', 'protocol'
 );
 
 CREATE TYPE node_status AS ENUM ('active', 'archived', 'inbox');
@@ -155,6 +155,13 @@ CREATE TABLE messages (
     created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
     read_at         TIMESTAMPTZ,
 
+    -- Set by memory_mcp.notifier once it fires a claude.ai routine's API
+    -- trigger for this message (offline delivery when no session's
+    -- listener is around). NULL = not yet fired, or reset after a failed
+    -- fire attempt so the next catch-up sweep retries. See
+    -- server/memory_mcp/notifier.py and migrations/004_add_routine_fired_at.sql.
+    routine_fired_at TIMESTAMPTZ,
+
     -- NOTE: "kind='reply' implies in_reply_to IS NOT NULL" is enforced in
     -- messages_set_thread() below, an INSERT-time trigger, deliberately NOT
     -- a table CHECK — in_reply_to is ON DELETE SET NULL, so a table CHECK
@@ -271,3 +278,68 @@ CREATE TABLE scan_verdicts (
 );
 
 CREATE INDEX idx_scan_verdicts_lookup ON scan_verdicts(query_hash, node_id);
+
+-- ---------------------------------------------------------------------
+-- Action protocols: deterministic "how do we do X" rules, looked up by
+-- protocol_hook.py (a PreToolUse hook) BEFORE a tool call, keyed on the
+-- ACTION being taken (e.g. "psql as role X", "read this file") rather than
+-- the task's topic -- the thing memory_search's semantic matching can't
+-- reach, since a rule like this rarely reads as similar to the task that
+-- triggers it. See protocols.py and protocol_hook.py.
+--
+-- One protocol_match row per kind='protocol' node: the node's title/body
+-- hold the human-readable rule text (what memory_search/memory_get return),
+-- this table holds the structured fields the hook matches on. Exact-field
+-- matching (tools/action_class/path_glob/db_role) is tried first, in
+-- protocols.py, before falling back to vector search over kind='protocol'
+-- nodes -- so most lookups never touch the embedding provider.
+-- ---------------------------------------------------------------------
+
+-- Reserved project owning global (all-project) protocols. Group-scoped
+-- protocols instead live on any real project in a project_group and are
+-- looked up via that group's id.
+INSERT INTO projects (slug, name)
+VALUES ('_global', 'Global (cross-project action protocols)')
+ON CONFLICT (slug) DO NOTHING;
+
+CREATE TABLE protocol_match (
+    -- 1:1 with the kind='protocol' node carrying the rule text.
+    node_id      BIGINT PRIMARY KEY REFERENCES nodes(id) ON DELETE CASCADE,
+    scope        TEXT NOT NULL CHECK (scope IN ('project', 'group', 'global')),
+    group_id     BIGINT REFERENCES project_groups(id) ON DELETE CASCADE,
+    -- NULL = applies to any tool. Otherwise one or more of Bash/Read/Edit/Write.
+    tools        TEXT[],
+    -- e.g. 'db.query', 'db.ddl', 'db.grant', 'api.call', 'git.write',
+    -- 'file.read', 'file.edit', 'shell.readonly'. A trailing '.*' segment
+    -- (e.g. 'db.*') matches any action_class sharing that prefix -- see
+    -- protocols.py's exact-match query.
+    action_class TEXT NOT NULL,
+    -- fnmatch-style glob against the action's path, matched in Python
+    -- (protocols.py), not in SQL.
+    path_glob    TEXT,
+    db_role      TEXT,
+    -- 'inform': inject the rule as context, tool call proceeds normally.
+    -- 'ask': same, but also force a permission prompt even in auto mode.
+    -- 'deny': block the call, rule text becomes the denial reason.
+    -- 'none': explicitly "no special rule for this" -- lets protocols.py
+    -- treat this action_class/scope as already reviewed, so the hook
+    -- doesn't keep asking the user about it.
+    effect       TEXT NOT NULL CHECK (effect IN ('inform', 'ask', 'deny', 'none'))
+);
+
+CREATE INDEX idx_protocol_match_action ON protocol_match(action_class);
+CREATE INDEX idx_protocol_match_scope ON protocol_match(scope, group_id);
+
+-- Caches the outcome of the (only-when-exact-match-misses) vector search
+-- step, keyed by a normalized action signature, so repeating the same kind
+-- of action doesn't re-embed it every time. node_id NULL means "vector
+-- search ran and found nothing" (also cached, to skip a wasted call next
+-- time). Fully invalidated (DELETE ... WHERE project_id = ...) whenever a
+-- protocol_add/archive touches that project's protocols -- see protocols.py.
+CREATE TABLE protocol_vector_cache (
+    project_id     BIGINT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    signature_hash TEXT NOT NULL,
+    node_id        BIGINT REFERENCES nodes(id) ON DELETE CASCADE,
+    at             TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (project_id, signature_hash)
+);

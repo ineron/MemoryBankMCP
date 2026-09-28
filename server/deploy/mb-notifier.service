@@ -1,0 +1,15 @@
+[Unit]
+Description=Memory Bank offline notifier (routine-fire on unread messages)
+After=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/home/eugene/AI_Projects/MemoryBankMCP/server/.venv/bin/python -u -m memory_mcp.notifier
+WorkingDirectory=/home/eugene/AI_Projects/MemoryBankMCP/server
+Restart=always
+RestartSec=10
+# journalctl --user -u mb-notifier picks up stdout automatically; no
+# explicit StandardOutput= needed.
+
+[Install]
+WantedBy=default.target

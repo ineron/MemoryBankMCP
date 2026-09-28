@@ -49,3 +49,10 @@ edit to react to one; handle it once the current step finishes. Then:
    message.
 6. Every reply must be self-contained (full paths, slugs, task numbers) —
    the receiving agent shares none of this session's context.
+
+**A claude.ai routine alert (`📬 Memory-bank inbox: <project>`) is only a
+pointer, not a handled message.** `memory_mcp.notifier` fires that routine
+when nothing was around to deliver live — the routine itself has no access
+to this system and cannot read, claim, or reply. Open a real session in the
+named project and follow this file's steps 1–6 as normal; the routine run
+did none of them.

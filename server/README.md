@@ -30,6 +30,7 @@ not per connected project — there's no migration runner or
 
 ```bash
 psql "$DATABASE_URL" -f memory_mcp/migrations/002_add_messages.sql
+# ...through the latest numbered file, e.g. migrations/005_protocols.sql
 ```
 
 `docker-compose.yml` is kept as an optional local-dev alternative (a
@@ -121,6 +122,95 @@ DB connection and stands by (rather than erroring) if another session is
 already listening for the same project. `MESSAGE_MAX_REPLY_DEPTH` (default
 `10`, see `.env.example`) caps how many times a thread can be replied to
 before a session must stop and surface it to its user.
+
+## Offline notifier (optional)
+
+`memory_mcp.listener` only exists while a Claude Code session has it armed
+— close the terminal and live delivery stops until the next `/start`.
+`memory_mcp.notifier` covers the gap: a separate, machine-wide daemon,
+independent of any session, that fires a claude.ai cloud **routine**'s API
+trigger when a message stays unread and no session's listener is around to
+deliver it live. It never reads message bodies past what the NOTIFY
+payload already carries (subject/preview, both already truncated) and
+never claims or replies to anything — it only tells you something is
+waiting. Real handling still happens from a normal session, same as today.
+
+**One-time setup:**
+
+1. Create a routine at [claude.ai/code/routines](https://claude.ai/code/routines)
+   (name it e.g. `memory-bank inbox alert`; no repository or connectors
+   needed). Add an **API** trigger, generate its token, and copy both the
+   URL and token — the token is shown once.
+2. Paste them into `server/.env` as `ROUTINE_FIRE_URL` / `ROUTINE_FIRE_TOKEN`
+   (see the `ROUTINE_*` block in `.env.example` for the full list of vars —
+   grace period, project/kind allowlists, extra headers). Leaving either
+   unset disables the notifier: it logs one line and exits `0`.
+3. Set the routine's saved prompt to treat its trigger `text` as an
+   untrusted JSON notification payload only — it must not attempt to read,
+   claim, or reply to anything, since it can't reach this server or DB.
+   (Full draft prompt: `/home/eugene/.claude/plans/twinkly-conjuring-milner.md`
+   at the time this was built, or ask a session to regenerate it from
+   `notifier.py`'s docstring and the `_fire()` payload shape.)
+4. Install the systemd **user** service and enable lingering so it runs
+   without a login session:
+
+   ```bash
+   systemctl --user enable --now $(pwd)/deploy/mb-notifier.service
+   loginctl enable-linger "$(whoami)"
+   ```
+
+   Logs: `journalctl --user -u mb-notifier -f`.
+
+One shared routine and one notifier instance cover every project sharing
+this Postgres DB — a `pg_try_advisory_lock` singleton (distinct lock class
+from the per-project listener lock) keeps two notifier processes from
+double-firing if you ever run more than one by accident.
+
+## Action protocols
+
+`memory_mcp.protocol_hook` is a `PreToolUse` hook, not part of the MCP
+server itself — it looks up rules about *how* to perform a class of action
+(which Postgres role may run DDL, how a given file should be read) before a
+Bash/Read/Edit/Write call runs, keyed on the action rather than the task's
+topic. See `../.claude/claude-memory-bank.md`'s "Action Protocols" section
+for why this needs a separate mechanism from `memory_search`, and
+`protocols.py`'s module docstring for the classify-then-match mechanics.
+
+**Registration** (machine-wide, in `~/.claude/settings.json`, not the
+per-project settings — one hook covers every registered project):
+
+```json
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash|Read|Edit|Write",
+        "hooks": [{
+          "type": "command",
+          "command": "cd /path/to/memory-bank-mcp/server && /path/to/memory-bank-mcp/server/.venv/bin/python -m memory_mcp.protocol_hook",
+          "timeout": 5
+        }]
+      }
+    ]
+  }
+}
+```
+
+Fails open on any error, timeout, or unreachable DB (no output, exit 0) —
+never blocks work over an infrastructure hiccup. Set `PROTOCOL_HOOK=off` in
+the hook's own environment to bypass it entirely without touching
+`settings.json`.
+
+An action with **no matching protocol anywhere** (project/group/`_global`)
+gets blocked, with the hook's denial reason telling the model to ask the
+user how that action class should be handled and record the answer via
+`protocol_add` — expect a burst of these the first time the hook is enabled
+machine-wide, while common action classes (`file.edit`, `git.write`,
+`shell.cd`, whichever shell utilities and Postgres roles you actually use)
+get their first rule. Seed obviously-safe defaults up front with
+`protocol_add(project="_global", ..., scope="global", effect="none")` to
+cut down on this — see `protocols.py`'s `_READONLY_UTILS` for the read-only
+shell commands already classified without needing one.
 
 ## Embedding provider
 

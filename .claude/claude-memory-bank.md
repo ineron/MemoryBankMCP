@@ -91,6 +91,14 @@ flowchart TD
    doesn't fit the above (an approved implementation plan, a one-off
    architectural decision record).
 
+10. **`kind="protocol"`** — a rule about *how* to perform a class of
+    action (which DB role may do what, how a given file should be read),
+    not about a topic. Paired 1:1 with a `protocol_match` row carrying the
+    structured fields (`action_class`, `scope`, `path_glob`, `db_role`,
+    `effect`) a `PreToolUse` hook matches on *before* the action runs —
+    see "Action Protocols" below. Created via `protocol_add`, never
+    `memory_upsert` directly.
+
 ### Relationships (Edges)
 
 Where the old system had no formal way to express "task A blocks task B"
@@ -200,6 +208,23 @@ Two mechanisms work together:
 2. **Subagent isolation.** The `memory-scan` subagent is the only thing that calls `memory_search`/`memory_get` during task investigation. It reviews results in its own disposable context, calls `memory_mark` on anything it judges irrelevant (so future identical searches stop resurfacing it), and returns only a synthesized brief to the calling session. Everything it read — including material it decided not to use — is discarded when it finishes; only the brief survives into the main conversation.
 
 This is why `/workflow:understand` delegates to `memory-scan` instead of calling the search tools itself: doing the filtering step in a subagent is what keeps "scanned but unneeded" content out of the session that actually needs to stay lean.
+
+## Action Protocols
+
+Scan-and-report (above) solves retrieval for material relevant to a task's
+*topic*. It cannot solve retrieval for a rule relevant to an *action* —
+"which Postgres role may run DDL", "how should this file be read" rarely
+reads as similar to whatever task happens to trigger that action, so
+`memory_search` won't reliably surface it no matter how well-tuned the
+threshold is. This needs a different trigger: the action itself, checked
+deterministically before it runs, not a semantic guess after the fact.
+
+`protocol_hook.py` is that trigger — a `PreToolUse` hook (machine-wide, not
+per-project) that classifies every Bash/Read/Edit/Write call and looks up a
+`kind="protocol"` node keyed on the action (exact-field match first, a
+cached vector search only as fallback). See CLAUDE.md's "Action protocols"
+section for the full mechanics (effects, scope precedence, the fail-open
+default) and `protocols.py`'s module docstring for the implementation.
 
 ## Cross-Project / Multi-Product
 

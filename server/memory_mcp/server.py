@@ -13,6 +13,9 @@ Tool groups (see plan doc for full rationale):
     (a separate conversational channel from the inbox-task mechanism above —
     see messaging.py and listener.py)
   - migration (phase 5): memory_import
+  - action protocols: protocol_add, protocol_check, protocol_list (see
+    protocols.py and protocol_hook.py -- a PreToolUse hook that looks these
+    up BEFORE a tool call, keyed on the action rather than the task topic)
   - codegraph plugin (optional, see memory_mcp/codegraph/): codegraph_build,
     codegraph_map, codegraph_deps, codegraph_search, codegraph_issues —
     registered only if the `codegraph` extra is installed
@@ -28,7 +31,7 @@ from typing import Any, Optional
 from dotenv import load_dotenv
 from mcp.server.fastmcp import FastMCP
 
-from . import db, messaging, retrieval
+from . import db, messaging, protocols, retrieval
 from .embeddings import embed_one
 from .importer import import_markdown_tree
 
@@ -496,12 +499,14 @@ async def memory_archive(node_id: int, status: str = "archived") -> dict[str, An
     if status not in ("active", "archived", "inbox"):
         raise ValueError("status must be 'active', 'archived', or 'inbox'")
     row = await db.fetchrow(
-        "UPDATE nodes SET status = $2 WHERE id = $1 RETURNING id, title, status",
+        "UPDATE nodes SET status = $2 WHERE id = $1 RETURNING id, title, status, kind",
         node_id,
         status,
     )
     if row is None:
         raise ValueError(f"No node with id={node_id}")
+    if row["kind"] == "protocol":
+        await protocols.invalidate_cache()
     return dict(row)
 
 
@@ -550,7 +555,8 @@ async def message_send(
     kind: "ask" (you want an answer), "reply" (you are answering), "fyi" (no
     answer expected). Defaults to "reply" when in_reply_to is set, else "ask".
 
-    Replies are capped at MESSAGE_MAX_REPLY_DEPTH (default 6) per thread: two
+    Replies are capped at MESSAGE_MAX_REPLY_DEPTH (default 10 if unset; this
+    deployment's server/.env.example pins it to 6) per thread: two
     idle agents answering each other would otherwise trade messages until one
     runs out of context. Past the cap this raises — stop replying, mark the
     thread read, and surface it to the user instead.
@@ -629,6 +635,102 @@ async def memory_import(project: str, path: str, dry_run: bool = False) -> dict[
     a large import (real API calls, real cost/time)."""
     project_id = await db.resolve_project_id(project)
     return await import_markdown_tree(project_id, Path(path), dry_run=dry_run)
+
+
+# ---------------------------------------------------------------------
+# Action protocols: deterministic "how do we do X" rules, looked up by
+# protocol_hook.py (a PreToolUse hook, registered separately in
+# ~/.claude/settings.json) BEFORE a Bash/Read/Edit/Write call runs, keyed on
+# the action being taken rather than the task's topic -- see protocols.py's
+# module docstring for why memory_search's semantic matching can't reach
+# these on its own.
+# ---------------------------------------------------------------------
+
+
+@mcp.tool()
+async def protocol_add(
+    project: str,
+    rule: str,
+    body: str = "",
+    scope: str = "project",
+    action_class: str = "",
+    tools: Optional[list[str]] = None,
+    path_glob: Optional[str] = None,
+    db_role: Optional[str] = None,
+    effect: str = "inform",
+) -> dict[str, Any]:
+    """Record an action protocol: a rule about HOW to perform a class of
+    action, e.g. "psql as api_user: API calls only, never read tables
+    directly" (action_class="db.query", db_role="api_user", scope="project",
+    effect="deny"), or "read *.env files by checking presence only, never
+    print contents" (action_class="file.read", path_glob="*.env",
+    effect="inform").
+
+    scope: "project" (default, applies only to `project`), "group" (all
+    projects in `project`'s group -- errors if it has none), or "global"
+    (every project on this machine).
+
+    action_class: e.g. 'db.query'/'db.dml'/'db.ddl'/'db.grant', 'api.call',
+    'git.read'/'git.write', 'file.read'/'file.edit', 'shell.readonly', or
+    'shell.<command>'. A trailing '.*' (e.g. 'db.*') matches the whole
+    action_class family. See protocols.py's extract_action for the full
+    vocabulary a Bash/Read/Edit/Write call gets classified into.
+
+    tools: restrict to specific tool names (e.g. ["Bash"]); omit for "any
+    tool that produces this action_class".
+
+    effect: 'inform' (inject the rule as context, call proceeds), 'ask'
+    (same, but also force a permission prompt), 'deny' (block the call,
+    rule text becomes the reason), or 'none' (explicitly "no special rule
+    here" -- stops protocol_hook.py from treating this action_class as
+    unreviewed and asking about it again).
+
+    Call this whenever the user states a convention for how an action
+    should be done, or corrects the same kind of action twice -- that's the
+    signal this should become a protocol instead of something re-explained
+    every session."""
+    return await protocols.add_protocol(
+        project=project,
+        rule=rule,
+        body=body,
+        scope=scope,
+        action_class=action_class,
+        tools=tools,
+        path_glob=path_glob,
+        db_role=db_role,
+        effect=effect,
+    )
+
+
+@mcp.tool()
+async def protocol_check(project: str, tool: str, input: dict[str, Any]) -> list[dict[str, Any]]:
+    """Debug/preview: classify a hypothetical tool call (`tool` name +
+    `input`, same shape as a PreToolUse payload's tool_name/tool_input) and
+    show which protocols would apply, WITHOUT blocking anything -- lets a
+    session check "is there a rule for this?" before running the real
+    command, or a human sanity-check protocol_add results. Returns one entry
+    per classified action (a multi-segment Bash command yields several)."""
+    actions = protocols.extract_action(tool, input)
+    results = await protocols.match(project, actions)
+    return [
+        {
+            "action_class": r.action.action_class,
+            "signature": r.action.signature,
+            "effect": r.effect,
+            "via": r.via,
+            "node_id": r.node_id,
+            "rule_title": r.rule_title,
+        }
+        for r in results
+    ]
+
+
+@mcp.tool()
+async def protocol_list(project: str) -> list[dict[str, Any]]:
+    """All action protocols that apply to `project` -- its own, its group's,
+    and global -- across the three scope levels. Use memory_archive(node_id)
+    to retire one (also clears the match cache)."""
+    return await protocols.list_protocols(project)
 
 
 # ---------------------------------------------------------------------
