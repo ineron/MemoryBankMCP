@@ -13,6 +13,7 @@ $ARGUMENTS
 - Follow existing conventions/patterns; implement incrementally, validating between changes; MultiEdit for cohesive multi-file changes.
 - Test after each component; check for compile/syntax/type errors as you go; handle edge cases.
 - Run project quality tools (lint, typecheck, tests, build) and validate manually — no leftover debug code/TODOs, error messages are user-friendly, implementation matches requirements.
+- **Web/UI checks in Chrome go through Playwright — always.** Don't improvise another way to launch or drive a browser (ad-hoc `chrome --headless`, Selenium, curl-and-guess, one-off scripts). Use the project's existing Playwright setup if it has one (`playwright.config.*`, `npx playwright test` / `pytest --browser chromium`); otherwise write the check as a Playwright test with the Chromium browser, headless by default, run it, and report pass/fail plus a screenshot or trace path for failures. Start the app under test first and wait for it to be reachable before running the check.
 
 ## If blocked mid-implementation
 
