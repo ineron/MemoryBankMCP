@@ -60,9 +60,43 @@ def test_classifier() -> None:
     print("PASS: classifier covers psql roles/DDL/DML/GRANT, curl, git, readonly utils, composite commands, paths")
 
 
+async def cleanup() -> None:
+    """Delete this test's protocol residue so repeat runs don't pile up
+    duplicates. Two places leak: rules on the test-protoc-* projects
+    (project/group scope), and scope='global' rules, which land on the shared
+    '_global' project -- those are found by their 'test.' action_class prefix
+    so real global rules (db.*, file.read, ...) are never touched. Deleting a
+    node cascades to protocol_match and protocol_vector_cache.
+    """
+    await db.execute(
+        """
+        DELETE FROM nodes
+        WHERE kind = 'protocol'
+          AND project_id IN (SELECT id FROM projects WHERE slug LIKE 'test-protoc-%')
+        """
+    )
+    await db.execute(
+        """
+        DELETE FROM nodes
+        WHERE kind = 'protocol'
+          AND project_id = (SELECT id FROM projects WHERE slug = '_global')
+          AND id IN (SELECT node_id FROM protocol_match WHERE action_class LIKE 'test.%')
+        """
+    )
+    await protocols.invalidate_cache()
+
+
 async def main() -> None:
     test_classifier()
 
+    await cleanup()  # residue from an earlier run that crashed before its own cleanup
+    try:
+        await run_db_checks()
+    finally:
+        await cleanup()
+
+
+async def run_db_checks() -> None:
     await project_group_create(slug="test-protoc-grp", name="Protocol test group")
     core = await project_create(slug="test-protoc-core", name="Protocol Test Core", group_slug="test-protoc-grp")
     await project_create(slug="test-protoc-sibling", name="Protocol Test Sibling", group_slug="test-protoc-grp")
@@ -150,10 +184,9 @@ async def main() -> None:
     print("PASS: unmatched action_class comes back effect='unknown'")
 
     # --- Test: vector fallback + cache, and invalidation on protocol_add ---
-    # Unique per run (this test's own nodes are never cleaned up between
-    # manual runs, same as the rest of this file's test-* residue) so a
-    # repeat run doesn't find a prior run's own match and short-circuit the
-    # "nothing matches yet" assertion below.
+    # Unique per run as a belt-and-braces guard so a leftover match from an
+    # earlier run can never short-circuit the "nothing matches yet"
+    # assertion below, even if cleanup() didn't get to run.
     # Not in the 'test.*' family either -- that wildcard (added above) would
     # otherwise win via exact prefix match before the vector step ever runs.
     vector_class = f"vectoronly.{uuid.uuid4().hex[:8]}"
