@@ -19,6 +19,12 @@ date first, in the style of [Keep a Changelog](https://keepachangelog.com/)
 - `/workflow:execute` now requires any Chrome/browser check to go through
   Playwright (the project's own setup, or a new headless-Chromium test),
   instead of letting the agent improvise a launch method each time.
+- This `CHANGELOG.md`, reconstructed from the full `git log`.
+- `/save` now has an optional step 3: if the project root has a
+  `CHANGELOG.md`, summarize the session's commits into it under today's
+  dated section (appending if one already exists) — skipped silently for
+  a project that doesn't keep one, and skipped entirely if nothing was
+  committed this session.
 
 ### Changed
 - Replaced `Monitor`-armed `listener.py` with the harness's native
