@@ -1,12 +1,14 @@
 # Handling a 💬 message notification — detail for /start
 
 Read this only when there's an actual message to handle: `message_inbox`
-returned something during `/start`, or a live listener notification arrives
-later in the session. Don't read it pre-emptively when there's nothing to
-act on.
+returned something during `/start`, or a live push from another session's
+`message_send` arrives later in the session (see
+`.claude/reference/live-push.md` for how the sender gets it to you). Don't
+read it pre-emptively when there's nothing to act on.
 
-A live listener notification looks like:
-`💬 msg#412 ❓ ask from ledgyx-core/... [thread 412 depth 0 ] ... — preview text`.
+A live push looks like a `<cross-session-message from="...">`-wrapped line:
+`💬 new message #412 (ask) from ledgyx-core — memory_tasks inbox split. Call
+message_thread(412) to read it.`
 It is an event, not a user turn — never interrupt an in-flight tool call or
 edit to react to one; handle it once the current step finishes. Then:
 
@@ -37,6 +39,8 @@ edit to react to one; handle it once the current step finishes. Then:
      repo and, if real retrieval is needed, dispatch `memory-scan`. Then
      `message_send(in_reply_to=N, from_project=<this project's slug>,
      body=...)` — `from_project` is required on a reply; omit `to_project`.
+     Attempt a live push on the reply too — see
+     `.claude/reference/live-push.md`.
    - **`ask`, `replies_left == 0`** → do **not** reply. Surface it instead:
      "thread T hit the reply-depth cap; it needs you."
 5. **The boundary is idle-vs-mid-task, not read-vs-write.** An idle

@@ -26,7 +26,8 @@ still waiting on:
 3. Draft a short `subject` from `<text>`.
 4. `message_send(to_project=<slug>, from_project=<this project's slug>,
    subject=..., body=<text>, kind=..., from_session="/message")`.
-5. Show the user what was sent and to whom.
+5. Attempt a live push — see `.claude/reference/live-push.md`.
+6. Show the user what was sent and to whom.
 
 **`/message reply <id> <text>`** — reply within an existing thread:
 1. `message_thread(<id>)` first, to confirm the thread and check
@@ -36,3 +37,4 @@ still waiting on:
    body=<text>, from_session="/message")` — `from_project` is required (it's
    how the direction is derived correctly even when you're replying to your
    own prior message in the thread); do not pass `to_project`.
+3. Attempt a live push — see `.claude/reference/live-push.md`.

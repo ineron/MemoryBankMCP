@@ -20,10 +20,13 @@ decide for itself.
    yourself:
    - a question, notice, or anything conversational → `message_send(
      to_project=<slug>, from_project=<this project's slug>, kind="ask"
-     or "fyi", ...)`.
+     or "fyi", ...)`, then attempt a live push — see
+     `.claude/reference/live-push.md`.
    - an actual work item for them to do → `memory_upsert(project=<slug>,
      kind="task", filed_from_project=<this project's slug>, ...)` — lands
-     in their 📥 inbox.
+     in their 📥 inbox. (No live-push analog for tasks — only messages get
+     the fast path today; a filed task is picked up at the target's next
+     `/start`.)
 3. **Not found** (unlikely — means the project was never registered in
    this memory bank). Do not guess, proceed anyway, or silently skip it.
    Tell the user directly and let them pick:
