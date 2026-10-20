@@ -343,3 +343,26 @@ CREATE TABLE protocol_vector_cache (
     at             TIMESTAMPTZ NOT NULL DEFAULT now(),
     PRIMARY KEY (project_id, signature_hash)
 );
+
+-- Append-only audit log: one row per decision protocol_hook.py made for a
+-- single classified Action (effect, or 'unknown' when no rule matched).
+-- Write-only from the hook's point of view -- it never reads this table,
+-- so a slow/failing insert can be swallowed without affecting the decision
+-- already returned to Claude Code (see protocol_hook.py's _audit_log,
+-- wrapped the same fail-open way as the rest of the hook). Modeled on
+-- cc-monitor's SQLite audit log, kept in this same Postgres DB instead of
+-- a separate store since everything else here already lives there.
+CREATE TABLE protocol_audit (
+    id           BIGSERIAL PRIMARY KEY,
+    at           TIMESTAMPTZ NOT NULL DEFAULT now(),
+    project_id   BIGINT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    session_id   TEXT,
+    tool_name    TEXT,
+    action_class TEXT NOT NULL,
+    signature    TEXT,
+    decision     TEXT NOT NULL CHECK (decision IN ('inform', 'ask', 'deny', 'none', 'unknown')),
+    node_id      BIGINT REFERENCES nodes(id) ON DELETE SET NULL
+);
+
+CREATE INDEX idx_protocol_audit_project_at ON protocol_audit(project_id, at DESC);
+CREATE INDEX idx_protocol_audit_decision ON protocol_audit(decision) WHERE decision IN ('deny', 'ask', 'unknown');

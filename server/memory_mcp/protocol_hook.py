@@ -20,6 +20,15 @@ a Claude Code PreToolUse payload from stdin, classifies the action
 FAIL OPEN, ALWAYS: any exception, timeout, or missing DATABASE_URL exits 0
 with no output rather than blocking work over an infrastructure hiccup. Set
 PROTOCOL_HOOK=off to bypass this hook entirely without editing settings.json.
+
+Every classified Action's decision (deny/ask/inform/none/unknown) is also
+appended to protocol_audit (_audit_log below) -- a durable, append-only
+record of what the hook decided and why, independent of whether the model
+acted on it. Best-effort: a logging failure is swallowed and never changes
+the decision already returned. This is the audit-log half of the cc-monitor-
+style layer (2026-10-20); it does not include cc-monitor's independent
+kernel-level (eBPF) verification layer or its web approval UI -- see the
+memory-bank project's active-context node for that scoping decision.
 """
 
 from __future__ import annotations
@@ -114,6 +123,29 @@ def _render_rule(result: "protocols.ProtocolResult", session_id: str, seen: set[
     return f"Protocol: {result.rule_title}{body}"
 
 
+async def _audit_log(
+    project_id: int, session_id: str, tool_name: str, results: list["protocols.ProtocolResult"]
+) -> None:
+    """Append one row per classified Action's decision. Best-effort only --
+    any failure here must never affect the decision already computed, so
+    callers wrap this in its own try/except (see _run)."""
+    for r in results:
+        await db.execute(
+            """
+            INSERT INTO protocol_audit
+                (project_id, session_id, tool_name, action_class, signature, decision, node_id)
+            VALUES ($1, $2, $3, $4, $5, $6, $7)
+            """,
+            project_id,
+            session_id,
+            tool_name,
+            r.action.action_class,
+            r.action.signature,
+            r.effect,
+            r.node_id,
+        )
+
+
 async def _run(payload: dict) -> dict | None:
     tool_name = payload.get("tool_name", "")
     tool_input = payload.get("tool_input") or {}
@@ -129,7 +161,7 @@ async def _run(payload: dict) -> dict | None:
         return None
 
     try:
-        await db.resolve_project_id(slug)
+        project_id = await db.resolve_project_id(slug)
     except ValueError:
         return None  # this project isn't registered in the memory bank DB
 
@@ -139,6 +171,11 @@ async def _run(payload: dict) -> dict | None:
 
     results = await protocols.match(slug, actions)
     seen = _seen_node_ids(session_id)
+
+    try:
+        await _audit_log(project_id, session_id, tool_name, results)
+    except Exception:
+        pass  # audit logging is best-effort -- never block or alter the decision
 
     deny_reasons = [f"[{r.action.action_class}] {r.rule_title}" for r in results if r.effect == "deny"]
     unknown = [r.action for r in results if r.effect == "unknown"]
