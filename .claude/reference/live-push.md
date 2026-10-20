@@ -1,16 +1,29 @@
 # Live push after message_send — detail for /message, cross-project-requests.md, message-handling.md replies
 
 Call this immediately after any `message_send` (a new message or a reply)
-whose recipient is a different project's session — it's a best-effort fast
-path on top of the durable Postgres row `message_send` already wrote.
-Skipping it, or it finding no match, loses nothing: the recipient still
-gets it the normal way, at their next `message_inbox` poll (`/start`), or
-via a `memory_mcp.notifier` routine fire if nobody opens a session in time
-(see `server/README.md`'s "Offline notifier" section). This replaced a
-Monitor-armed `memory_mcp.listener` (2026-10-20) — that approach needed a
-30-minutes-or-less watch mechanically re-armed to stay useful, which made
-it the wrong foundation for "always on"; `SendMessage`/`ListAgents` is a
-harness-native channel between live sessions with no such cap.
+whose recipient is a different project's session — it's a free, best-effort
+**bonus** fast path on top of the durable Postgres row `message_send`
+already wrote, and on top of `/start`'s own `listener.py`/`Monitor` arming
+(`.claude/commands/start.md` §4), which remains the path that actually
+guarantees live delivery. Skipping this step, or it finding no match, loses
+nothing: the recipient still gets it the normal way, via the armed
+Postgres listener if one is up, at their next `message_inbox` poll
+(`/start`), or via a `memory_mcp.notifier` routine fire if nobody opens a
+session in time (see `server/README.md`'s "Offline notifier" section).
+
+**Hard limitation, confirmed 2026-10-20 (don't try to work around this):**
+`SendMessage`/`ListAgents` cross-session messaging is restricted to
+sessions under the *same OS user*, by design — the delivery socket is
+owned by that user and gated by a per-session auth token; Claude Code
+actively refuses to set one up in a directory owned by a different user,
+regardless of `CLAUDE_CODE_TMPDIR`/`--messaging-socket-path`/shared-
+directory tricks. So this step can only ever help when the target
+project's session happens to run under the same OS account as this one
+(e.g. two projects both run as `eugene`) — for a cross-account pair (e.g.
+`eugene` sending to a project run under `dev`), it will simply find no
+match, every time, and that's expected: `listener.py`/`Monitor` is the only
+mechanism that reaches across that boundary (pure Postgres `LISTEN`/
+`NOTIFY`, no OS-level session discovery involved).
 
 1. `ListAgents()`.
 2. Normalize the target project's slug and every listed peer's name the

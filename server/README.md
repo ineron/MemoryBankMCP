@@ -102,22 +102,28 @@ share `scope="group"` search. If it has an existing `memory-bank/*.md`
 tree, call `memory_import(project=..., path="memory-bank", dry_run=True)`
 first to preview before running it for real.
 
-## Live message delivery
+## Message listener
 
 Inter-agent messages (`message_send`/`message_inbox`/`message_thread`/
-`message_mark`) are written to Postgres by the MCP server (request/response
-over stdio, so it can't push on its own) and get *live* delivery through
-the harness's own cross-session messaging instead: after `message_send`,
-the sending session itself calls `ListAgents`/`SendMessage` to push a
-pointer directly to the recipient's live session, if one is open on this
-machine — see `.claude/reference/live-push.md` for the exact procedure
-(used by `/message` and cross-project sends). There is nothing to run or
-arm for this; it's just a few extra tool calls the sender makes.
+`message_mark`) get live delivery through two paths that work together:
 
-`memory_mcp.listener` (a standalone `LISTEN`/`NOTIFY` process, armed via
-Claude Code's `Monitor` tool) was the original mechanism for this before
-2026-10-20. It's retired from that role — no command arms it any more — but
-still works for manual debugging if useful:
+1. **`memory_mcp.listener`** — a standalone `LISTEN`/`NOTIFY` process,
+   since the MCP server itself is request/response-only over stdio and
+   cannot push. `/start` arms this automatically via Claude Code's
+   `Monitor` tool. This is the path that actually guarantees delivery: it's
+   pure Postgres, so it works regardless of which OS user or machine the
+   sender is on.
+2. **`SendMessage`/`ListAgents`** (the harness's own cross-session
+   messaging) — a free bonus fast path a sender tries first, right after
+   `message_send` (see `.claude/reference/live-push.md`). **Confirmed
+   2026-10-20: this only ever works between sessions under the same OS
+   user** — Claude Code restricts the delivery socket to its owning user by
+   design (ownership + per-session auth token), with no override via
+   `CLAUDE_CODE_TMPDIR`/`--messaging-socket-path`/a shared directory. For a
+   cross-account or cross-machine pair, it will reliably find no match and
+   path 1 is what actually delivers.
+
+To run the listener by hand for debugging:
 
 ```bash
 source .venv/bin/activate
@@ -134,17 +140,15 @@ before a session must stop and surface it to its user.
 
 ## Offline notifier (optional)
 
-Since no session arms `memory_mcp.listener` any more, live delivery now
-depends entirely on the recipient's session being open and reachable by
-`SendMessage` at send time. `memory_mcp.notifier` covers everything
-else: a separate, machine-wide daemon, independent of any session, that
-fires a claude.ai cloud **routine**'s API trigger when a message stays
-unread past its grace period — whether that's because no session was open,
-the open one's address name didn't match its slug, or the live push simply
-didn't land. It never reads message bodies past what the NOTIFY payload
-already carries (subject/preview, both already truncated) and never claims
-or replies to anything — it only tells you something is waiting. Real
-handling still happens from a normal session, same as today.
+`memory_mcp.listener` only exists while a Claude Code session has it armed
+— close the terminal and live delivery stops until the next `/start`.
+`memory_mcp.notifier` covers the gap: a separate, machine-wide daemon,
+independent of any session, that fires a claude.ai cloud **routine**'s API
+trigger when a message stays unread and no session's listener is around to
+deliver it live. It never reads message bodies past what the NOTIFY
+payload already carries (subject/preview, both already truncated) and
+never claims or replies to anything — it only tells you something is
+waiting. Real handling still happens from a normal session, same as today.
 
 **One-time setup:**
 

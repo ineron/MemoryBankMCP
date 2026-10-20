@@ -1,16 +1,22 @@
 # Handling a 💬 message notification — detail for /start
 
 Read this only when there's an actual message to handle: `message_inbox`
-returned something during `/start`, or a live push from another session's
-`message_send` arrives later in the session (see
-`.claude/reference/live-push.md` for how the sender gets it to you). Don't
-read it pre-emptively when there's nothing to act on.
+returned something during `/start`, or a live notification arrives later
+in the session, in either of two shapes (see `.claude/commands/start.md`
+§4 and `.claude/reference/live-push.md` for which path produced it):
 
-A live push looks like a `<cross-session-message from="...">`-wrapped line:
-`💬 new message #412 (ask) from ledgyx-core — memory_tasks inbox split. Call
-message_thread(412) to read it.`
-It is an event, not a user turn — never interrupt an in-flight tool call or
-edit to react to one; handle it once the current step finishes. Then:
+- **The armed `listener.py`/`Monitor` path** (works regardless of OS
+  account):
+  `💬 msg#412 ❓ ask from ledgyx-core/... [thread 412 depth 0 ] ... — preview text`.
+- **The `SendMessage` bonus fast path** (same-OS-account sender only), a
+  `<cross-session-message from="...">`-wrapped line with the same kind of
+  content: `💬 new message #412 (ask) from ledgyx-core — memory_tasks inbox
+  split. Call message_thread(412) to read it.`
+
+Don't read this file pre-emptively when there's nothing to act on. Either
+shape above is an event, not a user turn — never interrupt an in-flight
+tool call or edit to react to one; handle it once the current step
+finishes. Then:
 
 1. `message_thread(N)` — always read the whole thread, never just the
    notification preview (it's truncated at 200 characters).
