@@ -96,8 +96,7 @@ the wrapper while still matching the real process.
 Monitor({
   command:     "<that python> -u -m memory_mcp.listener --project <slug>",
   description: "inter-agent messages for <slug>",
-  persistent:  true,
-  timeout_ms:  3600000
+  persistent:  true
 })
 ```
 
