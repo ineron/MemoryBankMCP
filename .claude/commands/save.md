@@ -40,6 +40,19 @@ project slug from `.claude/settings.json` first; all calls below use it.
    something. This is where the full narrative goes — the detail that
    would bloat `active` if it lived there instead.
 
+3. **Changelog** — only if the project root has a `CHANGELOG.md` (not
+   every project sharing this command package keeps one — skip silently
+   if there isn't one; this is not a convention to impose on a project
+   that hasn't opted in). Look at this session's commits (`git log`
+   covering what's new since the changelog was last touched — `git log
+   -- CHANGELOG.md` for its last update, then commits after that) and add
+   `Added`/`Changed`/`Fixed`/`Removed` bullets under today's dated section,
+   matching the file's existing style. If today's section already exists
+   (a second `/save` the same day), append to it instead of duplicating
+   the heading. Skip this step entirely if no commits were made this
+   session — a changelog entry records what shipped, not what was
+   discussed.
+
 Be brief and factual in `active`. Focus on what the next session needs to
 know to continue immediately; put everything else in `progress` or in the
 task's own `body` — see above.
