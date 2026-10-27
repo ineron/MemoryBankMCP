@@ -105,25 +105,43 @@ first to preview before running it for real.
 ## Message listener
 
 Inter-agent messages (`message_send`/`message_inbox`/`message_thread`/
-`message_mark`) get live delivery through two paths that work together:
+`message_mark`) get live delivery through two paths:
 
-1. **`memory_mcp.listener`** — a standalone `LISTEN`/`NOTIFY` process,
+1. **`SendMessage`/`ListAgents`** (the harness's own cross-session
+   messaging) — the **default** path as of 2026-10-27, tried right after
+   `message_send` (see `.claude/reference/live-push.md`). No process to
+   arm, no expiry, no re-arming. **Confirmed 2026-10-20: this only ever
+   works between sessions under the same OS user** — Claude Code restricts
+   the delivery socket to its owning user by design (ownership +
+   per-session auth token), with no override via
+   `CLAUDE_CODE_TMPDIR`/`--messaging-socket-path`/a shared directory. This
+   stopped being a practical limitation once every project on this machine
+   moved under the same OS user (`eugene`).
+2. **`memory_mcp.listener`** — a standalone `LISTEN`/`NOTIFY` process,
    since the MCP server itself is request/response-only over stdio and
-   cannot push. `/start` arms this automatically via Claude Code's
-   `Monitor` tool. This is the path that actually guarantees delivery: it's
-   pure Postgres, so it works regardless of which OS user or machine the
-   sender is on.
-2. **`SendMessage`/`ListAgents`** (the harness's own cross-session
-   messaging) — a free bonus fast path a sender tries first, right after
-   `message_send` (see `.claude/reference/live-push.md`). **Confirmed
-   2026-10-20: this only ever works between sessions under the same OS
-   user** — Claude Code restricts the delivery socket to its owning user by
-   design (ownership + per-session auth token), with no override via
-   `CLAUDE_CODE_TMPDIR`/`--messaging-socket-path`/a shared directory. For a
-   cross-account or cross-machine pair, it will reliably find no match and
-   path 1 is what actually delivers.
+   cannot push. No longer armed by `/start` automatically — it's an
+   **opt-in fallback**, for a project whose session (or a frequent
+   correspondent's) runs under a *different* OS account or a *different
+   machine* sharing this same Postgres DB, which path 1 structurally
+   cannot reach. Arm it the same way `/start` used to by default:
 
-To run the listener by hand for debugging:
+   ```
+   Monitor({
+     command:     "<server-venv-python> -u -m memory_mcp.listener --project <slug>",
+     description: "inter-agent messages for <slug>",
+     persistent:  true
+   })
+   ```
+
+   guarded by `pgrep -f "memory_mcp\.listener --project <slug>$"` first (so
+   a `/clear` or a second terminal doesn't double-arm it), and re-armed
+   mechanically on every `Monitor` expiry if your environment's `Monitor`
+   tool lacks `persistent` support — the same health-check-only handling
+   this file's §4 used to spell out in full before 2026-10-27 (minimal
+   status line, no retrieval calls, no narration) applies unchanged if you
+   opt into this path.
+
+To run the listener by hand for debugging (either path):
 
 ```bash
 source .venv/bin/activate

@@ -9,6 +9,25 @@ dated section should be added alongside the commit(s) it describes, newest
 date first, in the style of [Keep a Changelog](https://keepachangelog.com/)
 (`Added`/`Changed`/`Fixed`/`Removed`).
 
+## 2026-10-27
+
+### Changed
+- Flipped live message delivery back to `SendMessage`/`ListAgents` as the
+  **default** — `/start` no longer arms `listener.py`/`Monitor`
+  automatically. Context: every project on this machine now runs under the
+  same OS user (moved there 2026-10-26), which was the one thing
+  `SendMessage` structurally couldn't reach (confirmed 2026-10-20); with
+  that no longer a blocker, `Monitor`'s real cost (capping at ~30 min,
+  needing mechanical re-arming without `persistent` support) stopped being
+  worth paying by default. `listener.py`/`Monitor` remains available as an
+  opt-in fallback — arm it manually for any project whose session (or a
+  frequent correspondent's) runs under a different OS account or machine;
+  see `server/README.md`'s "Message listener" section for the exact call.
+  `mb-notifier` is unaffected either way. Also corrected an earlier
+  implicit overclaim: neither live path ever delivers to a fully closed
+  session — that was always `mb-notifier` + the next `/start` poll's job,
+  not a `listener.py` advantage being traded away here.
+
 ## 2026-10-20
 
 ### Added

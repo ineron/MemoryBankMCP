@@ -5,13 +5,15 @@ returned something during `/start`, or a live notification arrives later
 in the session, in either of two shapes (see `.claude/commands/start.md`
 §4 and `.claude/reference/live-push.md` for which path produced it):
 
-- **The armed `listener.py`/`Monitor` path** (works regardless of OS
-  account):
+- **The default `SendMessage` path** (same-OS-account sender, which is
+  every project on this machine as of 2026-10-27), a
+  `<cross-session-message from="...">`-wrapped line:
+  `💬 new message #412 (ask) from ledgyx-core — memory_tasks inbox split.
+  Call message_thread(412) to read it.`
+- **The opt-in `listener.py`/`Monitor` path** (only if this project
+  specifically armed it manually per start.md §4's cross-account/
+  cross-machine branch):
   `💬 msg#412 ❓ ask from ledgyx-core/... [thread 412 depth 0 ] ... — preview text`.
-- **The `SendMessage` bonus fast path** (same-OS-account sender only), a
-  `<cross-session-message from="...">`-wrapped line with the same kind of
-  content: `💬 new message #412 (ask) from ledgyx-core — memory_tasks inbox
-  split. Call message_thread(412) to read it.`
 
 Don't read this file pre-emptively when there's nothing to act on. Either
 shape above is an event, not a user turn — never interrupt an in-flight

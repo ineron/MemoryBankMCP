@@ -1,29 +1,32 @@
 # Live push after message_send — detail for /message, cross-project-requests.md, message-handling.md replies
 
 Call this immediately after any `message_send` (a new message or a reply)
-whose recipient is a different project's session — it's a free, best-effort
-**bonus** fast path on top of the durable Postgres row `message_send`
-already wrote, and on top of `/start`'s own `listener.py`/`Monitor` arming
-(`.claude/commands/start.md` §4), which remains the path that actually
-guarantees live delivery. Skipping this step, or it finding no match, loses
-nothing: the recipient still gets it the normal way, via the armed
-Postgres listener if one is up, at their next `message_inbox` poll
-(`/start`), or via a `memory_mcp.notifier` routine fire if nobody opens a
-session in time (see `server/README.md`'s "Offline notifier" section).
+whose recipient is a different project's session — as of 2026-10-27 this is
+the **default** live-delivery path, not a bonus on top of something else:
+`/start` no longer arms `listener.py`/`Monitor` by default (see
+`.claude/commands/start.md` §4). Skipping this step, or it finding no
+match, loses nothing: the recipient still gets it the normal way, at their
+next `message_inbox` poll (`/start`), via a manually-armed Postgres
+listener if that project opted into one, or via a `memory_mcp.notifier`
+routine fire if nobody opens a session in time (see `server/README.md`'s
+"Offline notifier" section).
 
-**Hard limitation, confirmed 2026-10-20 (don't try to work around this):**
-`SendMessage`/`ListAgents` cross-session messaging is restricted to
-sessions under the *same OS user*, by design — the delivery socket is
-owned by that user and gated by a per-session auth token; Claude Code
-actively refuses to set one up in a directory owned by a different user,
-regardless of `CLAUDE_CODE_TMPDIR`/`--messaging-socket-path`/shared-
-directory tricks. So this step can only ever help when the target
-project's session happens to run under the same OS account as this one
-(e.g. two projects both run as `eugene`) — for a cross-account pair (e.g.
-`eugene` sending to a project run under `dev`), it will simply find no
-match, every time, and that's expected: `listener.py`/`Monitor` is the only
-mechanism that reaches across that boundary (pure Postgres `LISTEN`/
-`NOTIFY`, no OS-level session discovery involved).
+**Hard limitation, confirmed 2026-10-20 (doesn't apply to this machine's
+current setup, but keep it in mind):** `SendMessage`/`ListAgents`
+cross-session messaging is restricted to sessions under the *same OS
+user*, by design — the delivery socket is owned by that user and gated by
+a per-session auth token; Claude Code actively refuses to set one up in a
+directory owned by a different user, regardless of
+`CLAUDE_CODE_TMPDIR`/`--messaging-socket-path`/shared-directory tricks. So
+this step can only ever help when the target project's session happens to
+run under the same OS account as this one. Every project on this machine
+currently runs as the same OS user (`eugene`), which is exactly why this
+became the default — but if a project ever moves to, or is created under,
+a different account or a different machine sharing this same Postgres DB,
+this step will reliably find no match for it, and that project's `/start`
+should arm `listener.py`/`Monitor` manually (step 4's opt-in branch) to get
+live delivery back — pure Postgres `LISTEN`/`NOTIFY` has no OS-level
+session-discovery boundary to hit.
 
 1. `ListAgents()`.
 2. Normalize the target project's slug and every listed peer's name the
