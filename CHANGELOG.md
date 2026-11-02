@@ -9,6 +9,30 @@ dated section should be added alongside the commit(s) it describes, newest
 date first, in the style of [Keep a Changelog](https://keepachangelog.com/)
 (`Added`/`Changed`/`Fixed`/`Removed`).
 
+## 2026-10-31
+
+### Changed
+- Flipped live message delivery back to `listener.py`/`Monitor` as the
+  **default** (4th revision of this subsystem — see the 2026-10-27 and
+  2026-10-20 entries below for the prior two). `/start` §4 arms it
+  automatically again; `SendMessage`/`ListAgents` reverts to a free
+  same-account bonus fast path on top of it. Context: the 2026-10-27 flip
+  to `SendMessage`-only reasoned correctly that every project moving to
+  the same OS user (2026-10-26) removed `SendMessage`'s one known gap, but
+  missed a second, independent one found the same week and confirmed live
+  against a long-idle `KafkaConsumer` session: an interactive Claude Code
+  session idle past ~1h gets its process suspended and drops out of
+  `ListAgents` entirely, something `listener.py`'s independent background
+  process (confirmed alive after 29 days idle) is immune to. The user then
+  moved every remaining project off OS user `dev` onto `eugene`
+  (2026-10-30), which further closes the original 2026-10-20 gap but does
+  nothing for the idle-suspension one — so `listener.py` goes back to
+  being the default on that basis alone, decided explicitly by the user
+  this session rather than inferred. Updated: `.claude/commands/start.md`
+  §4/§5/§7, `.claude/reference/live-push.md`,
+  `.claude/reference/message-handling.md`, `server/README.md`'s "Message
+  listener" section, `CLAUDE.md`.
+
 ## 2026-10-27
 
 ### Changed
